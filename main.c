@@ -1,19 +1,25 @@
 /*
- * A character on a parallax stage that scrolls forever, with a title screen.
+ * A character on a parallax stage that scrolls forever, with a title screen
+ * and a dialogue screen in front of it.
  *
  * On the Neo Geo a sprite is a vertical strip of tiles, and there is no
  * background layer at all: the stage is sprites too, numbered below the
  * character because higher-numbered sprites are drawn in front.
  *
- * The 68000 cannot reach the sound chip either. It writes a command byte to
- * REG_SOUND, the Z80 takes an NMI and plays the sample; src/user_commands.s
- * is the other half of that conversation.
+ * The screen-wide machinery lives in src/: video.c owns the fix layer, the
+ * frame clock and the transitions, dialogue.c is the portrait-and-text screen,
+ * input.c samples the pad, and sound.h is the list of noises the Z80 can make.
  */
 
 #include <ngdevkit/neogeo.h>
 #include <ngdevkit/ng-fix.h>
 #include "hero.h"
 #include "stage.h"
+#include "assets/sfx.h"
+#include "dialogue.h"
+#include "input.h"
+#include "sound.h"
+#include "video.h"
 
 /* C ROM layout. The BIOS eye-catcher owns tiles 0-255, then each sheet is
    loaded after the one before it, in the order the makefile lists them. */
@@ -67,17 +73,6 @@
 #define FACING_RIGHT 0
 #define FACING_LEFT 1
 
-/* Sound commands. These must stay in step with the jump table in
-   src/user_commands.s; 0 to 3 are reserved by the sound driver. */
-#define SND_RESET 3
-#define SND_COIN 4
-#define SND_JUMP 5
-#define SND_PUNCH 6
-
-static inline void play_sound(u8 command) {
-    *REG_SOUND = command;
-}
-
 enum state {
     ST_IDLE,
     ST_WALK,
@@ -94,23 +89,24 @@ static u8 facing = FACING_RIGHT;
 static enum state state = ST_IDLE;
 static u8 frame = 0;
 static u8 tick = 0;
-/* Edge detection, so holding a button does not retrigger the action. */
-static u8 prev_pad = 0;
 /* The tile column each scrolling layer is currently showing, so its tile maps
    are only rewritten when the scroll crosses a whole tile. */
 static s16 hills_tile_scroll = -1;
 static s16 ground_tile_scroll = -1;
 
 
-/* Defined with the rest of the frame handling, further down. */
-static void wait_vblank(void);
-
-
-/* Palette 0 draws the fix layer (the text), 1 the character, 2 the stage. */
+/* The four palettes video.h names. */
 static const u16 text_palette[16] = {
     0x8000, 0x0fff, 0x0666, 0x8000, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
 };      /*                  ^ colour 3: black, what the transition paints */
+
+/* The same text colours, but colour 3 is the frame colour the dialogue boxes
+   are drawn in rather than black. */
+static const u16 ui_palette[16] = {
+    0x8000, 0x0fff, 0x0666, 0x0eb4, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+};      /*                  ^ colour 3: warm gold */
 
 
 /*
@@ -145,83 +141,15 @@ static u16 dim_color(u16 c, u16 num, u16 den) {
 
 static void set_brightness(u16 level) {
     for (u16 i = 0; i < 16; i++) {
-        MMAP_PALBANK1[i] = dim_color(text_palette[i], level, FADE_STEPS);
-        MMAP_PALBANK1[16 + i] = dim_color(hero_palette[i], level, FADE_STEPS);
-        MMAP_PALBANK1[32 + i] = dim_color(stage_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_TEXT * 16 + i] =
+            dim_color(text_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_HERO * 16 + i] =
+            dim_color(hero_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_STAGE * 16 + i] =
+            dim_color(stage_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_UI * 16 + i] =
+            dim_color(ui_palette[i], level, FADE_STEPS);
     }
-}
-
-
-/*
- * Screen transition: a block dissolve.
- *
- * The fix layer is a 40x32 grid of 8x8 tiles drawn on top of every sprite, so
- * filling its cells with a solid tile hides the screen and clearing them
- * reveals it again a block at a time. 8x8 is as fine as this gets - the fix
- * grid is the hardware's, and nothing smaller exists.
- *
- * Each cell is given a pseudo-random step at which it flips, so the screen
- * breaks up in a scatter rather than a sweep. One step per frame, so the whole
- * thing takes DISSOLVE_STEPS frames, and each frame only touches the cells
- * belonging to that step.
- *
- * The fix layer also holds the text, so a dissolve wipes any text with it.
- * Screens therefore reveal first and draw their text afterwards.
- */
-#define FIX_MAP 0x7000
-#define FIX_COLS 40
-#define FIX_ROWS 32
-#define SOLID_TILE 1280                 /* straight after ngdevkit's font */
-#define EMPTY_TILE 255                  /* transparent */
-#define BLOCK_PALETTE 0                 /* colour 3 of it is black */
-#define DISSOLVE_STEPS 16
-
-/// Which step a cell flips on. Deliberately scrambled, not a sweep.
-static u8 cell_step(u16 col, u16 row) {
-    u16 h = (u16)(col * 37u + row * 101u + ((col ^ row) << 3));
-    h ^= (u16)(h >> 5);
-    return (u8)(h % DISSOLVE_STEPS);
-}
-
-static void fix_put(u16 col, u16 row, u16 entry) {
-    *REG_VRAMADDR = FIX_MAP + col * 32 + row;
-    *REG_VRAMRW = entry;
-}
-
-/// Cover every cell at once, with no animation.
-static void cover_screen(void) {
-    *REG_VRAMMOD = 1;
-    for (u16 col = 0; col < FIX_COLS; col++) {
-        *REG_VRAMADDR = FIX_MAP + col * 32;
-        for (u16 row = 0; row < FIX_ROWS; row++) {
-            *REG_VRAMRW = (BLOCK_PALETTE << 12) | SOLID_TILE;
-        }
-    }
-}
-
-/// Flip every cell to `entry`, a step per frame, scattered.
-static void dissolve(u16 entry) {
-    for (u8 step = 0; step < DISSOLVE_STEPS; step++) {
-        *REG_VRAMMOD = 0;
-        for (u16 col = 0; col < FIX_COLS; col++) {
-            for (u16 row = 0; row < FIX_ROWS; row++) {
-                if (cell_step(col, row) == step) {
-                    fix_put(col, row, entry);
-                }
-            }
-        }
-        wait_vblank();
-    }
-}
-
-/// Break the screen up into blocks until it is covered.
-static void dissolve_out(void) {
-    dissolve((BLOCK_PALETTE << 12) | SOLID_TILE);
-}
-
-/// Clear the blocks away to reveal whatever the sprites are showing.
-static void dissolve_in(void) {
-    dissolve((BLOCK_PALETTE << 12) | EMPTY_TILE);
 }
 
 
@@ -409,24 +337,6 @@ static void init_hero(void) {
 }
 
 
-/*
- * Read player 1's joystick straight from the hardware.
- *
- * REG_P1CNT is active low - a bit reads 0 while its switch is held - so invert
- * it to get the "1 means pressed" convention of the CNT_* masks.
- */
-static u8 read_p1(void) {
-    return (u8)~(*REG_P1CNT);
-}
-
-
-/// Player 1's Start button, which lives in a different register to the stick.
-/// Active low as well, so the same inversion applies.
-static u8 read_start(void) {
-    return (u8)~(*REG_STATUS_B) & CNT_START1;
-}
-
-
 /// Advance `frame`, stopping on the last one. Returns 1 when the end is reached.
 static u8 advance_once(u8 frames, u8 rate) {
     if (frame + 1 >= frames) {
@@ -458,9 +368,8 @@ static void set_state(enum state s) {
 
 
 static void update_hero(void) {
-    u8 pad = read_p1();
-    u8 pressed = pad & ~prev_pad;       /* newly pressed this frame */
-    prev_pad = pad;
+    u8 pad = in_pad;
+    u8 pressed = in_pressed;
 
     /* Attacking and jumping run to completion; they are not interrupted. */
     if (state == ST_ATTACK) {
@@ -541,20 +450,6 @@ static void update_hero(void) {
 }
 
 
-/* The cartridge runtime calls this back on every Vertical Blank interrupt,
-   which is our frame clock: 59.6 Hz on AES, 59.2 Hz on MVS. */
-static volatile u8 vblank = 0;
-
-void rom_callback_VBlank(void) {
-    vblank = 1;
-}
-
-static void wait_vblank(void) {
-    while (!vblank);
-    vblank = 0;
-}
-
-
 /*
  * The title screen.
  *
@@ -627,7 +522,6 @@ static void draw_menu(u8 selected) {
 /// Runs the title screen until the player picks something. Returns the choice.
 static u8 title_screen(void) {
     u8 selected = MENU_START;
-    u8 prev_start = 0;
 
     ng_cls();
     cover_screen();
@@ -643,25 +537,42 @@ static u8 title_screen(void) {
     ng_center_text(25, 0, "W S TO CHOOSE   ENTER OR J TO PICK");
 
     for (;;) {
-        u8 pad = read_p1();
-        u8 pressed = pad & ~prev_pad;
-        prev_pad = pad;
+        wait_vblank();
+        input_poll();
 
-        if (pressed & (CNT_UP | CNT_DOWN)) {
+        if (in_pressed & (CNT_UP | CNT_DOWN)) {
             selected = (selected + 1) % MENU_ITEMS;   /* only two entries */
             draw_menu(selected);
+            play_sound(SND_JUMP);       /* doubles as the cursor blip */
         }
-        u8 start = read_start();
-        u8 start_pressed = start & ~prev_start;
-        prev_start = start;
 
-        if ((pressed & (CNT_A | CNT_B | CNT_C | CNT_D)) || start_pressed) {
+        if ((in_pressed & (CNT_A | CNT_B | CNT_C | CNT_D)) || in_start_pressed) {
             return selected;
         }
-
-        wait_vblank();
     }
 }
+
+
+/*
+ * What the character is told before the stage starts.
+ *
+ * Placeholder text: the screen it is shown on is the point, and swapping in
+ * the real script is a matter of editing these strings. Uppercase because that
+ * is all the fix font draws well.
+ */
+static const char *const intro_pages[] = {
+    "LOREM IPSUM DOLOR SIT AMET, CONSECTETUR ADIPISCING ELIT.",
+    "SED DO EIUSMOD TEMPOR INCIDIDUNT UT LABORE ET DOLORE MAGNA ALIQUA.",
+    "UT ENIM AD MINIM VENIAM, QUIS NOSTRUD EXERCITATION ULLAMCO LABORIS.",
+};
+
+static const struct dialogue intro_dialogue = {
+    intro_pages,
+    sizeof(intro_pages) / sizeof(intro_pages[0]),
+    SND_TAIKO,
+    SFX_TAIKO_FRAMES,           /* looped: the screen lasts as long as the
+                                   player takes to read it */
+};
 
 
 int main(void) {
@@ -704,7 +615,13 @@ int main(void) {
         }
 
         dissolve_out();
-        play_sound(SND_COIN);
+        play_sound(SND_GONG);
+
+        /* The dialogue is read against black, so nothing is left on screen
+           behind it. It dissolves in itself and leaves the screen covered. */
+        show_hero(0);
+        show_stage(0);
+        dialogue_run(&intro_dialogue);
 
         ng_cls();
         cover_screen();
@@ -718,14 +635,16 @@ int main(void) {
         show_hero(1);
 
         dissolve_in();
-        #ifdef HERO_CROUCH_ROW
+        play_sound(SND_KOTO);
+#ifdef HERO_CROUCH_ROW
         ng_center_text(2, 0, "A D WALK  W JUMP  S CROUCH  J HIT");
 #else
         ng_center_text(2, 0, "A D WALK   W JUMP   J HIT");
 #endif
 
-
         for (;;) {
+            wait_vblank();
+            input_poll();
             update_hero();
 
             /* The far hills move at a quarter of the floor's speed, which is
@@ -734,9 +653,6 @@ int main(void) {
                          camera_x >> 2, &hills_tile_scroll);
             scroll_layer(GROUND_SPRITE, GROUND_TILE, STAGE_GROUND_ROWS,
                          camera_x, &ground_tile_scroll);
-
-
-            wait_vblank();
         }
     }
     return 0;

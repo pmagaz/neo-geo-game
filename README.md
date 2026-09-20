@@ -3,8 +3,8 @@
 A Neo Geo AES/MVS cartridge game, built from source with
 [ngdevkit](https://github.com/dciabrin/ngdevkit).
 
-A title screen, a character who walks, jumps, crouches and attacks, a
-three-layer parallax stage that scrolls endlessly, and sound.
+A title screen, a dialogue screen, a character who walks, jumps, crouches and
+attacks, a three-layer parallax stage that scrolls endlessly, and sound.
 
 ## Install
 
@@ -63,7 +63,12 @@ letter keys, whose ASCII codes are the same under both SDL versions.
 
 | Path | What it is |
 |---|---|
-| `main.c` | The game |
+| `main.c` | The game: the stage, the character, the title screen |
+| `src/video.*` | The fix layer, the frame clock and the screen transitions |
+| `src/dialogue.*` | The portrait-and-text screen, driven from a list of pages |
+| `src/input.*` | Player 1's pad, sampled once a frame |
+| `src/sound.h` | The numbers the 68000 sends the Z80 to ask for a sound |
+| `src/user_commands.s` | The Z80 side of that: which sample each number plays |
 | `assets/` | Source art. `square.gif` is the 16x16 sprite tile |
 | `rom.mk` | Cartridge layout: which ROM chips exist and how big |
 | `Makefile` | Which assets go into which ROM chip |

@@ -213,3 +213,36 @@ crouch. The character's size is `--height` in the `prep_sheet` step.
 Both tools write a C header next to their output with the palette, the frame
 size and where each animation starts, and the game reads those rather than
 hard-coded numbers — so a new sheet of a different size needs no code change.
+
+---
+
+## 7. Sound
+
+Everything the game plays is an ADPCM-A sample in the 512 KB V ROM. Drop an
+`.mp3` in `assets/sound/`, add its name to `SFX` in the makefile and to
+`assets/sound/samples-map.yaml`, then give it a command number in
+`src/user_commands.s` and a matching `SND_*` in `src/sound.h`.
+
+| Constraint | Value | Why |
+|---|---|---|
+| Sample rate | 18.5 kHz, fixed | The YM2610's ADPCM-A channels have no rate control |
+| Channels | Mono | Panning is per channel, in the descriptor |
+| Cost | ~9 KB per second | 4 bits a sample; the V ROM holds about 56 seconds |
+| Channels available | 6 | Sounds on the same channel cut each other off |
+| Filename | lowercase | The build derives the WAV and the C name from it |
+
+The makefile resamples and trims each file, generously at the tail so a decay
+is not clipped. It also writes `build/assets/sfx.h` with each sample's length
+in video frames.
+
+**Channel choice matters.** Effects that can overlap need separate channels: a
+punch landed in mid-air must not cut the jump short. The two music tracks
+deliberately share channel 4, so starting one stops the other.
+
+**Looping is a retrigger.** The YM2610 loops ADPCM-B in hardware but not
+ADPCM-A, so a track that has to keep going is started again as it ends. Use
+the generated `SFX_<NAME>_FRAMES` as the period rather than a number you
+worked out once — retrimming the audio changes it.
+
+**Long music is expensive.** An eight second loop is a sixth of the sample ROM.
+Prefer a short phrase that loops over a long one that does not.

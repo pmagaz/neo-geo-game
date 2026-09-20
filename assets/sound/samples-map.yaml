@@ -8,11 +8,17 @@
 # 18.5 kHz, because that is the fixed rate of the YM2610's ADPCM-A channels.
 
 - adpcm_a:
-    name: coin
-    uri: file://build/assets/sfx/coin-pickup.wav
+    name: gong
+    uri: file://build/assets/sfx/gong.wav
 - adpcm_a:
     name: jump
     uri: file://build/assets/sfx/jump.wav
 - adpcm_a:
     name: punch
     uri: file://build/assets/sfx/punch.wav
+- adpcm_a:
+    name: taiko
+    uri: file://build/assets/sfx/taiko.wav
+- adpcm_a:
+    name: koto
+    uri: file://build/assets/sfx/koto.wav
