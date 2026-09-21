@@ -3,8 +3,12 @@
 A Neo Geo AES/MVS cartridge game, built from source with
 [ngdevkit](https://github.com/dciabrin/ngdevkit).
 
-A title screen, a dialogue screen, a character who walks, jumps, crouches and
-attacks, a three-layer parallax stage that scrolls endlessly, and sound.
+A title screen, a dialogue screen, a character who walks, jumps and attacks on
+a floor with depth, a three-layer parallax stage, and sound.
+
+The engine is partway through being converted from a side-scroller to a 2.5D
+beat-'em-up. `docs/DEPTH_MIGRATION.md` is the plan and says which stage the
+work has reached.
 
 ## Install
 
@@ -47,8 +51,10 @@ the oldest window keeps running an old build and fixes appear to do nothing.
 
 | Key | Action |
 |---|---|
-| `W` `A` `S` `D` | Move |
-| `J` `K` `L` `I` | Buttons A B C D |
+| `W` `A` `S` `D` | Move — up and down walk into and out of the screen |
+| `J` | Button A: attack |
+| `K` | Button B: jump |
+| `L` `I` | Buttons C and D |
 | `Enter` | Start |
 | `5` | Insert coin (MVS) |
 | `Esc` | GnGeo menu |
@@ -63,7 +69,8 @@ letter keys, whose ASCII codes are the same under both SDL versions.
 
 | Path | What it is |
 |---|---|
-| `main.c` | The game: the stage, the character, the title screen |
+| `main.c` | The game: the stage, the characters, the title screen |
+| `src/floor.h` | The walkable floor plane, and the fixed point positions use |
 | `src/video.*` | The fix layer, the frame clock and the screen transitions |
 | `src/dialogue.*` | The portrait-and-text screen, driven from a list of pages |
 | `src/input.*` | Player 1's pad, sampled once a frame |

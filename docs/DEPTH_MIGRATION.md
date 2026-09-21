@@ -11,8 +11,10 @@ in section 4 was measured from the code and the art rather than estimated; if
 you are reading this after the migration has begun, the sections describing
 "today" are a snapshot and the code is the truth.
 
-Nothing here is implemented yet. Section 9 lists the four decisions that have
-to be made before any of it can be.
+**Progress: stage 1 is done.** The character art is scaled to 96 px, the stage
+is relaid out, and characters carry depth and height and move on the floor
+plane. Stage 2, the depth sorting and the shadows, is next. Section 9 records
+what has been decided and what is still open.
 
 ---
 
@@ -326,7 +328,7 @@ refreshes it.
 Five stages. The build compiles and the game is playable at the end of each
 one, and each is a commit.
 
-### Stage 1 — the coordinate model
+### Stage 1 — the coordinate model — done
 
 Add `src/floor.h`: `FLOOR_TOP`, `FLOOR_DEPTH`, the 8.8 helpers, and the single
 derivation of screen Y from depth that everything else calls. Introduce the
@@ -475,19 +477,36 @@ exceptions: it is the only thing creating the illusion.
 
 ---
 
-## 9. Decisions still open
+## 9. Decisions
 
-Nothing in section 6 can start until these are settled.
+Settled, and built in stage 1:
 
-1. **Jump on button B, with up and down for depth?** (flag B)
+1. **Jump is on button B**, and up and down steer through the floor's depth.
+   Crouch went with it: down is depth now, and the current character had no
+   crouch art in any case. (flag B)
 
-2. **Scale the character art to 96 px, or keep it at 112 and move `FLOOR_TOP`
-   to 144?** Scaling is strongly preferred: 144 + 71 puts the front row's feet
-   at screen Y 215, inside the bottom sixteen lines that `ASSET_SPECS.md`
-   already warns fall outside a real TV's picture. (flag A)
+2. **The character art is scaled to 96 px**, six whole tiles, rather than
+   moving `FLOOR_TOP` down to 144. Moving it would have put the front row's
+   feet at screen Y 215, inside the bottom sixteen lines that
+   `ASSET_SPECS.md` warns fall outside a real TV's picture. (flag A)
 
-3. **Regenerate the stage to the three-layer layout?** Without it the port is
-   fourteen sprites over the scanline limit and the back half of the floor
-   scrolls at the wrong speed. (flag C)
+3. **The stage is relaid out** into stacked layers. (flag C)
 
-4. **Retire `HERO=old`?** (risk 4)
+Still open:
+
+4. **Retire `HERO=old`?** Nothing has been done to it. It still builds its
+   sheet, but it is 4 x 4 tiles rather than 4 x 6 and its crouch animation is
+   no longer reachable, so it is untested against the floor plane. (risk 4)
+
+5. **A jump at the back of the floor clips the top of the head.** Found while
+   verifying stage 1. At depth 0 the feet are on line 128 and the character is
+   96 px tall, so a 45 px jump puts the top of the sprite at -13 and about 13
+   rows are lost off the top of the screen.
+
+   It is not a collision with the HUD - the HUD is on the fix layer, which
+   draws over every sprite, so a jumping character correctly passes behind it.
+   It is only the screen edge. Three ways out: leave it, since it is brief and
+   only at the very back; lower the jump from 9 to 7, which peaks at 28 px and
+   clears; or accept the head clipping as the cost of a floor that starts as
+   high as it does. This is a question about how the jump should feel, so it
+   is being left alone until the shadows are in and it can be judged properly.
