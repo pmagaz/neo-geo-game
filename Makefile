@@ -117,9 +117,13 @@ HERO?=new
 
 ifeq ($(HERO),new)
 # Each animation is its own GIF with far more frames than a 60 Hz game needs,
-# so they are sampled down and laid out as a sheet. No scaling: this art is
-# used at the size it was drawn. There is no crouch art, and the jump borrows
-# mid-stride frames from the run as a stand-in.
+# so they are sampled down and laid out as a sheet. There is no crouch art,
+# and the jump borrows mid-stride frames from the run as a stand-in.
+#
+# 96 pixels tall is not a preference. The floor plane starts at screen line
+# 128 and the HUD owns lines 0-31, so 128 - 32 is the tallest a character can
+# be and still clear the HUD while standing at the back of the floor. It is
+# also exactly six tiles, so the sprite carries no wasted transparent row.
 #
 # The tolerance is tuned to this art. Its backdrop is (91,112,117); the ground
 # shadow drawn under the character sits 45 away from that per channel and the
@@ -131,7 +135,7 @@ NEWGIFS=assets/new/runing.gif assets/new/attack.gif
 PREPPED=$(BUILDDIR)/assets/hero-sheet-$(HERO).png
 
 $(PREPPED): $(NEWGIFS) tools/gifs2sheet.py Makefile | $(BUILDDIR)/assets
-	$(PYTHON) tools/gifs2sheet.py -o $@ --bg-tolerance 46 \
+	$(PYTHON) tools/gifs2sheet.py -o $@ --bg-tolerance 46 --height 96 \
 	    --anim "walk=assets/new/runing.gif:2-43:8" \
 	    --anim "attack=assets/new/attack.gif:1-26:8" \
 	    --anim "jump=assets/new/runing.gif:4-12:4"

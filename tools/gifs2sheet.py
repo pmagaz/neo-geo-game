@@ -15,6 +15,10 @@ separated by fully transparent gaps, with transparent gaps between frames.
 Each --anim is NAME=FILE:FRAMES. Frames are taken evenly across the file;
 use :FIRST-LAST:FRAMES to sample from part of it instead, which is how to
 skip a neutral pose sitting at the front of a cycle.
+
+--height scales the result, the way prep_sheet.py does for a hand-laid
+sheet, so art drawn at whatever size it arrived at comes out the size the
+game wants.
 """
 
 import argparse
@@ -95,6 +99,38 @@ def pick(frames, count, first=None, last=None):
     return [frames[lo + round(i * span / (count - 1))] for i in range(count)]
 
 
+def scale_frames(rows, height):
+    """Scale every frame so the tallest one comes out `height` pixels.
+
+    One factor for all of them, and applied before the sheet is laid out:
+    sheet2neo.py fits a single bounding box to every frame of every animation,
+    so scaling them individually would make the character change size when
+    the animation changed.
+
+    The alpha is thresholded afterwards because LANCZOS feathers the edges it
+    shrinks, and sheet2neo.py counts any pixel above zero alpha as part of the
+    character. A feathered edge would push the bounding box a pixel or two
+    past the target and cost a whole extra tile row - which is 16 pixels of
+    sprite height and a row of tiles per frame in the C ROM, for nothing.
+    """
+    tallest = max(f.height for _, _, _, fs in rows for f in fs)
+    scale = height / tallest
+
+    for _, _, _, frames in rows:
+        for i, f in enumerate(frames):
+            size = (max(1, round(f.width * scale)),
+                    max(1, round(f.height * scale)))
+            g = f.resize(size, Image.LANCZOS)
+            px = g.load()
+            for y in range(g.height):
+                for x in range(g.width):
+                    r, gr, b, a = px[x, y]
+                    px[x, y] = (r, gr, b, 255) if a >= 128 else (0, 0, 0, 0)
+            frames[i] = g
+
+    return tallest, scale
+
+
 def parse_anim(spec):
     """NAME=FILE:FRAMES or NAME=FILE:FIRST-LAST:FRAMES"""
     name, _, rest = spec.partition("=")
@@ -118,6 +154,8 @@ def main():
     p.add_argument("--bg-tolerance", type=int, default=24,
                    help="how far each channel may differ from the corner "
                         "colour and still count as backdrop; -1 keeps it")
+    p.add_argument("--height", type=int, metavar="PX",
+                   help="scale so the tallest frame is this many pixels")
     args = p.parse_args()
 
     rows = []
@@ -133,6 +171,11 @@ def main():
             bb = f.getbbox()
             trimmed.append(f.crop(bb) if bb else f)
         rows.append((name, path, len(frames), trimmed))
+
+    if args.height:
+        tallest, scale = scale_frames(rows, args.height)
+        print(f"  scaled by {scale:.3f}: tallest frame {tallest} -> "
+              f"{args.height} px")
 
     cell_w = max(f.width for _, _, _, fs in rows for f in fs) + GAP
     cell_h = max(f.height for _, _, _, fs in rows for f in fs) + GAP

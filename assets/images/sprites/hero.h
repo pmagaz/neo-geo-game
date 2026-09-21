@@ -3,23 +3,23 @@
 #define HERO_H
 
 #define HERO_TILES_W 4
-#define HERO_TILES_H 7
+#define HERO_TILES_H 6
 #define HERO_SHEET_W 32
-#define HERO_TILE_COUNT 672
+#define HERO_TILE_COUNT 576
 
 #define HERO_WALK_FRAMES 8
 #define HERO_WALK_ROW 0
 #define HERO_ATTACK_FRAMES 8
-#define HERO_ATTACK_ROW 7
+#define HERO_ATTACK_ROW 6
 #define HERO_JUMP_FRAMES 4
-#define HERO_JUMP_ROW 14
+#define HERO_JUMP_ROW 12
 
 /* 16 colours, index 0 transparent. */
 static const u16 hero_palette[16] = {
-    0x8000, 0x4a86, 0x3766, 0xc577,
-    0x6754, 0x2632, 0x9344, 0x1321,
-    0x9821, 0x4311, 0x5000, 0x8000,
-    0x8000, 0x8000, 0x8000, 0x8000,
+    0x8000, 0x7975, 0x3532, 0x5321,
+    0x1321, 0x5221, 0x9321, 0x0211,
+    0x3100, 0xf000, 0x5000, 0x4000,
+    0x0000, 0x0000, 0x8000, 0x8000,
 };
 
 #endif
