@@ -17,6 +17,7 @@
 #include "stage.h"
 #include "assets/sfx.h"
 #include "dialogue.h"
+#include "floor.h"
 #include "input.h"
 #include "sound.h"
 #include "video.h"
@@ -39,19 +40,62 @@
 #define GROUND_SPRITE (HILLS_SPRITE + STAGE_COLS + 1)
 #define FIRST_SPRITE (GROUND_SPRITE + STAGE_COLS + 1)
 
+/*
+ * Each character owns a block of consecutive sprites, and it has to be
+ * consecutive: the columns of a character are a sticky chain, where every
+ * column after the first inherits the leader's position and sits 16 px to its
+ * right. So a character cannot be given sprites scattered through the list.
+ *
+ * Three sprites are reserved in front of each body for the shadow that
+ * arrives with the depth sorting. They sit at zero height until then. The
+ * reservation costs nothing - 315 of the hardware's 381 sprites are unused -
+ * and it saves renumbering every block afterwards.
+ *
+ * The shadow comes before the body so that it draws behind it, drawing order
+ * being sprite order.
+ */
+#define MAX_ENTITIES 8
+#define SHADOW_SPRITES 3
+#define BODY_SPRITES HERO_TILES_W
+#define ENT_SPRITES (SHADOW_SPRITES + BODY_SPRITES)
+
+#define ENT_SHADOW(slot) (FIRST_SPRITE + (slot) * ENT_SPRITES)
+#define ENT_BODY(slot) (ENT_SHADOW(slot) + SHADOW_SPRITES)
+
 #define SCREEN_W 320
 #define SCREEN_H 224
 #define CHAR_W (HERO_TILES_W * 16)
 #define CHAR_H (HERO_TILES_H * 16)
 
-#define WALK_SPEED 2
-#define JUMP_SPEED (-9)
-#define GRAVITY 1
+/*
+ * Movement, in 8.8 pixels a frame.
+ *
+ * Depth moves at 65% of horizontal. The floor is seen at a shallow angle, so
+ * a scanline of depth stands for more ground than a pixel of width; matching
+ * the two speeds would make walking towards the screen feel like sprinting.
+ *
+ * The diagonals are that pair scaled so their magnitude is exactly the
+ * horizontal speed: 1.676 and 1.090 give 1.999. Without it, holding two
+ * directions is 19% faster than holding one, which every player finds inside
+ * a minute and which turns every fight into a diagonal shuffle.
+ */
+#define SPEED_X FX(2)       /* 512, 2.000 px */
+#define SPEED_Z 333         /*      1.301 px, 65% of x */
+#define SPEED_DIAG_X 429    /*      1.676 px */
+#define SPEED_DIAG_Z 279    /*      1.090 px */
 
-/* Halfway down the floor's depth, until the character carries a depth of its
-   own and this goes away. */
-#define GROUND_LEVEL \
-    (STAGE_FLOOR_TOP + STAGE_FLOOR_DEPTH / 2 - CHAR_H)
+#define JUMP_SPEED FX(9)
+#define GRAVITY FX(1)
+
+/*
+ * The stage's extent in whole pixels. Four screens, which is how far the
+ * world used to run before it wrapped - but bounded, because a camera that
+ * clamps to the stage and a fight room that seals its exits both need the
+ * stage to have ends. Per-room bounds replace this.
+ */
+#define STAGE_WIDTH (4 * SCREEN_W)
+#define STAGE_X_MIN FX(0)
+#define STAGE_X_MAX FX(STAGE_WIDTH - CHAR_W)
 
 /*
  * The camera only follows once the character leaves a dead zone in the middle
@@ -61,19 +105,12 @@
 #define CAM_RIGHT ((SCREEN_W * 60 / 100) - CHAR_W / 2)
 #define CAM_LEFT ((SCREEN_W * 40 / 100) - CHAR_W / 2)
 
-/*
- * Both scrolling layers repeat every 320 pixels, and the far layer moves at a
- * quarter speed, so the pair only lines up again every 4 * 320. Wrapping the
- * world there keeps the coordinates small without ever showing a seam.
- */
-#define WORLD_WRAP (4 * 320)
-
 /* Game frames each animation frame is held for. */
 #define WALK_RATE 4
 #define ATTACK_RATE 3
-#define CROUCH_RATE 3
 
-/// The art faces right, so walking left is the mirrored one.
+/// The art faces right, so walking left is the mirrored one. Depth adds no
+/// facings: nothing ever faces towards the screen or away from it.
 #define FACING_RIGHT 0
 #define FACING_LEFT 1
 
@@ -81,18 +118,24 @@ enum state {
     ST_IDLE,
     ST_WALK,
     ST_JUMP,
-    ST_CROUCH,
     ST_ATTACK,
 };
 
-static s16 hero_world_x = SCREEN_W / 2 - CHAR_W / 2;
+struct entity {
+    s32 x;          /* along the stage, 8.8 */
+    s16 z;          /* depth on the floor, 8.8, clamped to the band */
+    s16 air;        /* height above the floor, 8.8; zero is standing */
+    s16 vair;       /* vertical speed, 8.8 */
+    u8 active;
+    u8 facing;
+    u8 state;
+    u8 frame;
+    u8 tick;
+};
+
+static struct entity ents[MAX_ENTITIES];
+static struct entity *player = &ents[0];
 static s16 camera_x = 0;
-static s16 hero_y = GROUND_LEVEL;
-static s16 hero_vy = 0;
-static u8 facing = FACING_RIGHT;
-static enum state state = ST_IDLE;
-static u8 frame = 0;
-static u8 tick = 0;
 /* The tile column each scrolling layer is currently showing, so its tile maps
    are only rewritten when the scroll crosses a whole tile. */
 static s16 hills_tile_scroll = -1;
@@ -295,19 +338,19 @@ static void scroll_layer(u16 first, u16 tile_base, u16 rows,
 
 
 /*
- * Load one animation frame into the character's sprites.
+ * Load one animation frame into a character's sprite block.
  *
  * Mirroring is not only a per-tile flag: the columns have to be emitted in
  * reverse order too, or the character is assembled back to front.
  */
-static void set_frame(u16 anim_row, u8 f, u8 dir) {
+static void set_body_frame(u16 base, u16 anim_row, u8 f, u8 dir) {
     u16 attr = (1 << 8) | (dir == FACING_LEFT ? 1 : 0);   /* palette 1, H-flip */
 
-    for (u16 col = 0; col < HERO_TILES_W; col++) {
-        u16 src = (dir == FACING_LEFT) ? (HERO_TILES_W - 1 - col) : col;
+    for (u16 col = 0; col < BODY_SPRITES; col++) {
+        u16 src = (dir == FACING_LEFT) ? (BODY_SPRITES - 1 - col) : col;
 
         *REG_VRAMMOD = 1;
-        *REG_VRAMADDR = ADDR_SCB1 + (FIRST_SPRITE + col) * 64;
+        *REG_VRAMADDR = ADDR_SCB1 + (base + col) * 64;
         for (u16 row = 0; row < HERO_TILES_H; row++) {
             *REG_VRAMRW = HERO_TILE + (anim_row + row) * HERO_SHEET_W
                           + f * HERO_TILES_W + src;
@@ -317,140 +360,299 @@ static void set_frame(u16 anim_row, u8 f, u8 dir) {
 }
 
 
-static void move_hero_to(s16 x, s16 y) {
+/// Position a character's block. Only the leader is written; the rest of the
+/// chain is sticky and follows it.
+static void place_body(u16 base, s16 x, s16 y) {
     *REG_VRAMMOD = ADDR_SCB4 - ADDR_SCB3;   /* so SCB4 follows SCB3 */
-    *REG_VRAMADDR = ADDR_SCB3 + FIRST_SPRITE;
+    *REG_VRAMADDR = ADDR_SCB3 + base;
     *REG_VRAMRW = (((496 - y) & 0x1ff) << 7) | HERO_TILES_H;
     *REG_VRAMRW = (x & 0x1ff) << 7;
 }
 
 
-static void init_hero(void) {
-    set_frame(HERO_WALK_ROW, 0, facing);
+/// A sprite with a height of zero is not drawn, and a sticky follower
+/// inherits the leader's height, so zeroing the leader hides the block.
+static void hide_body(u16 base) {
+    *REG_VRAMMOD = 0;
+    *REG_VRAMADDR = ADDR_SCB3 + base;
+    *REG_VRAMRW = 0;
+}
 
-    for (u16 col = 0; col < HERO_TILES_W; col++) {
+
+/*
+ * Lay out every character's sprite block once: shrink off, and the chain
+ * stitched together. Only the tiles and the leader's position change per
+ * frame after this.
+ */
+static void init_entities(void) {
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        u16 base = ENT_BODY(slot);
+
+        for (u16 col = 0; col < BODY_SPRITES; col++) {
+            *REG_VRAMMOD = 0;
+            *REG_VRAMADDR = ADDR_SCB2 + base + col;
+            *REG_VRAMRW = 0xfff;            /* no shrinking */
+
+            if (col > 0) {
+                *REG_VRAMADDR = ADDR_SCB3 + base + col;
+                *REG_VRAMRW = 1 << 6;       /* sticky: follow the previous one */
+            }
+        }
+        hide_body(base);
+
+        /* The shadow block is reserved but has no art yet. */
         *REG_VRAMMOD = 0;
-        *REG_VRAMADDR = ADDR_SCB2 + FIRST_SPRITE + col;
-        *REG_VRAMRW = 0xfff;
-
-        if (col > 0) {
-            *REG_VRAMADDR = ADDR_SCB3 + FIRST_SPRITE + col;
-            *REG_VRAMRW = 1 << 6;           /* sticky: follow the previous one */
+        for (u16 col = 0; col < SHADOW_SPRITES; col++) {
+            *REG_VRAMADDR = ADDR_SCB3 + ENT_SHADOW(slot) + col;
+            *REG_VRAMRW = 0;
         }
     }
 }
 
 
-/// Advance `frame`, stopping on the last one. Returns 1 when the end is reached.
-static u8 advance_once(u8 frames, u8 rate) {
-    if (frame + 1 >= frames) {
-        return 1;
-    }
-    if (++tick >= rate) {
-        tick = 0;
-        frame++;
+/// Advance a character's frame, stopping on the last one. Returns 1 once the
+/// last frame has been held for its full time, not as soon as it is reached -
+/// otherwise the final frame of an attack flickers past in one game frame and
+/// the move is shorter than the animation suggests.
+static u8 advance_once(struct entity *e, u8 frames, u8 rate) {
+    if (++e->tick >= rate) {
+        e->tick = 0;
+        if (e->frame + 1 >= frames) {
+            return 1;
+        }
+        e->frame++;
     }
     return 0;
 }
 
-/// Advance `frame`, looping back to the start.
-static void advance_loop(u8 frames, u8 rate) {
-    if (++tick >= rate) {
-        tick = 0;
-        frame = (frame + 1) % frames;
+/// Advance a character's frame, looping back to the start.
+static void advance_loop(struct entity *e, u8 frames, u8 rate) {
+    if (++e->tick >= rate) {
+        e->tick = 0;
+        e->frame = (u8)((e->frame + 1) % frames);
     }
 }
 
 
-static void set_state(enum state s) {
-    if (state != s) {
-        state = s;
-        frame = 0;
-        tick = 0;
+static void set_state(struct entity *e, enum state s) {
+    if (e->state != s) {
+        e->state = (u8)s;
+        e->frame = 0;
+        e->tick = 0;
     }
 }
 
 
-static void update_hero(void) {
+/// Keep a character on the floor and inside the stage. Per-room depth limits,
+/// for a bridge or a corridor that narrows the floor, replace the band here.
+static void clamp_to_floor(struct entity *e) {
+    if (e->z < FX(0)) {
+        e->z = FX(0);
+    } else if (e->z > FX(FLOOR_Z_MAX)) {
+        e->z = FX(FLOOR_Z_MAX);
+    }
+
+    if (e->x < STAGE_X_MIN) {
+        e->x = STAGE_X_MIN;
+    } else if (e->x > STAGE_X_MAX) {
+        e->x = STAGE_X_MAX;
+    }
+}
+
+
+/*
+ * Walk by the eight-direction speed table. Returns 1 if anything moved.
+ *
+ * Up is away from the viewer, because depth 0 is the back of the floor.
+ * Facing is only touched by the horizontal part: walking straight towards the
+ * screen must not turn the character round, and there is no art for facing
+ * that way in any case.
+ */
+static u8 walk(struct entity *e, u8 pad) {
+    s16 dx = 0;
+    s16 dz = 0;
+
+    if (pad & CNT_LEFT) {
+        dx = -1;
+    } else if (pad & CNT_RIGHT) {
+        dx = 1;
+    }
+    if (pad & CNT_UP) {
+        dz = -1;
+    } else if (pad & CNT_DOWN) {
+        dz = 1;
+    }
+
+    if (!dx && !dz) {
+        return 0;
+    }
+
+    if (dx && dz) {
+        e->x += dx * SPEED_DIAG_X;
+        e->z += dz * SPEED_DIAG_Z;
+    } else {
+        e->x += dx * SPEED_X;
+        e->z += dz * SPEED_Z;
+    }
+
+    if (dx) {
+        e->facing = (dx < 0) ? FACING_LEFT : FACING_RIGHT;
+    }
+    return 1;
+}
+
+
+static void update_player(struct entity *e) {
     u8 pad = in_pad;
     u8 pressed = in_pressed;
 
     /* Attacking and jumping run to completion; they are not interrupted. */
-    if (state == ST_ATTACK) {
-        if (advance_once(HERO_ATTACK_FRAMES, ATTACK_RATE)) {
-            set_state(ST_IDLE);
+    if (e->state == ST_ATTACK) {
+        if (advance_once(e, HERO_ATTACK_FRAMES, ATTACK_RATE)) {
+            set_state(e, ST_IDLE);
         }
-    } else if (state == ST_JUMP) {
+    } else if (e->state == ST_JUMP) {
         /* Steering in mid-air is allowed, which is what makes a jump feel
-           controllable rather than committed. */
-        if (pad & CNT_LEFT) { hero_world_x -= WALK_SPEED; facing = FACING_LEFT; }
-        if (pad & CNT_RIGHT) { hero_world_x += WALK_SPEED; facing = FACING_RIGHT; }
+           controllable rather than committed. Depth included: a jump that
+           could not change depth would be useless for crossing a fight. */
+        walk(e, pad);
 
-        hero_y += hero_vy;
-        hero_vy += GRAVITY;
-        if (hero_y >= GROUND_LEVEL) {
-            hero_y = GROUND_LEVEL;
-            hero_vy = 0;
-            set_state(ST_IDLE);
+        e->air += e->vair;
+        e->vair -= GRAVITY;
+        if (e->air <= 0) {
+            e->air = 0;
+            e->vair = 0;
+            set_state(e, ST_IDLE);
         } else {
             /* Map the arc onto the animation: rising uses the early frames,
                falling the later ones. */
-            u8 f = (hero_vy < 0) ? 2 : 3;
-            frame = (hero_y >= GROUND_LEVEL - 8) ? 4 : f;
+            e->frame = (e->vair > 0) ? 2 : 3;
         }
     } else if (pressed & CNT_A) {
-        set_state(ST_ATTACK);
+        set_state(e, ST_ATTACK);
         play_sound(SND_PUNCH);
-    } else if (pressed & CNT_UP) {
-        set_state(ST_JUMP);
-        hero_vy = JUMP_SPEED;
-        frame = 1;
+    } else if (pressed & CNT_B) {
+        /* Jump is a button now. Up and down steer through the floor's depth,
+           so the stick has no spare direction to put it on. */
+        set_state(e, ST_JUMP);
+        e->vair = JUMP_SPEED;
+        e->frame = 1;
         play_sound(SND_JUMP);
-#ifdef HERO_CROUCH_FRAMES
-    } else if (pad & CNT_DOWN) {
-        set_state(ST_CROUCH);
-        advance_once(HERO_CROUCH_FRAMES, CROUCH_RATE);
-#endif
-    } else if (pad & (CNT_LEFT | CNT_RIGHT)) {
-        set_state(ST_WALK);
-        if (pad & CNT_LEFT) { hero_world_x -= WALK_SPEED; facing = FACING_LEFT; }
-        else { hero_world_x += WALK_SPEED; facing = FACING_RIGHT; }
-        advance_loop(HERO_WALK_FRAMES, WALK_RATE);
+    } else if (walk(e, pad)) {
+        set_state(e, ST_WALK);
+        advance_loop(e, HERO_WALK_FRAMES, WALK_RATE);
     } else {
-        set_state(ST_IDLE);
-        frame = 0;
+        set_state(e, ST_IDLE);
+        e->frame = 0;
     }
 
-    /* Follow the character once it leaves the dead zone. */
-    s16 screen_x = hero_world_x - camera_x;
+    clamp_to_floor(e);
+}
+
+
+/*
+ * Follow the character once it leaves the dead zone, then clamp to the stage.
+ *
+ * The world used to wrap here instead, which kept the coordinates small and
+ * let the stage scroll forever. It cannot stay: a camera that stops at the
+ * end of a stage, and a fight room that seals its exits, both need the stage
+ * to have ends to stop at.
+ */
+static void update_camera(const struct entity *e) {
+    s16 world_x = FX_PX(e->x);
+    s16 screen_x = (s16)(world_x - camera_x);
+
     if (screen_x > CAM_RIGHT) {
-        camera_x = hero_world_x - CAM_RIGHT;
+        camera_x = (s16)(world_x - CAM_RIGHT);
     } else if (screen_x < CAM_LEFT) {
-        camera_x = hero_world_x - CAM_LEFT;
+        camera_x = (s16)(world_x - CAM_LEFT);
     }
 
-    /* Wrap the world rather than let the coordinates run away. Both the
-       character and the camera move together, so nothing shifts on screen. */
-    if (hero_world_x >= WORLD_WRAP) {
-        hero_world_x -= WORLD_WRAP;
-        camera_x -= WORLD_WRAP;
-    } else if (hero_world_x < 0) {
-        hero_world_x += WORLD_WRAP;
-        camera_x += WORLD_WRAP;
+    if (camera_x < 0) {
+        camera_x = 0;
+    } else if (camera_x > STAGE_WIDTH - SCREEN_W) {
+        camera_x = STAGE_WIDTH - SCREEN_W;
     }
+}
 
-    u16 row;
-    switch (state) {
-    case ST_ATTACK: row = HERO_ATTACK_ROW; break;
-    case ST_JUMP:   row = HERO_JUMP_ROW;   break;
-#ifdef HERO_CROUCH_ROW
-    case ST_CROUCH: row = HERO_CROUCH_ROW; break;
-#endif
-    default:        row = HERO_WALK_ROW;   break;   /* idle rests on walk[0] */
+
+static u16 anim_row(const struct entity *e) {
+    switch (e->state) {
+    case ST_ATTACK: return HERO_ATTACK_ROW;
+    case ST_JUMP:   return HERO_JUMP_ROW;
+    default:        return HERO_WALK_ROW;   /* idle rests on walk[0] */
     }
+}
 
-    set_frame(row, frame, facing);
-    move_hero_to(hero_world_x - camera_x, hero_y);
+
+/*
+ * Write the characters to the sprite list.
+ *
+ * Every VRAM write in the frame happens here, and none of the movement above
+ * touches the hardware. That split is what the sorting pass slots into: it
+ * reorders which block each character is emitted into, and nothing in the
+ * logic has to know.
+ *
+ * No sorting yet, so each character stays in its own block and a nearer one
+ * does not yet draw in front of one further back.
+ */
+static void draw_entities(void) {
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        struct entity *e = &ents[slot];
+
+        if (!e->active) {
+            hide_body(ENT_BODY(slot));
+            continue;
+        }
+
+        set_body_frame(ENT_BODY(slot), anim_row(e), e->frame, e->facing);
+        place_body(ENT_BODY(slot),
+                   (s16)(FX_PX(e->x) - camera_x),
+                   floor_screen_top(e->z, e->air, CHAR_H));
+    }
+}
+
+
+static void hide_entities(void) {
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        hide_body(ENT_BODY(slot));
+    }
+}
+
+
+static struct entity *spawn(s32 x, s16 z, u8 facing) {
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        struct entity *e = &ents[slot];
+        if (!e->active) {
+            e->x = x;
+            e->z = z;
+            e->air = 0;
+            e->vair = 0;
+            e->active = 1;
+            e->facing = facing;
+            e->state = ST_IDLE;
+            e->frame = 0;
+            e->tick = 0;
+            return e;
+        }
+    }
+    return 0;
+}
+
+
+static void reset_entities(void) {
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        ents[slot].active = 0;
+    }
+    camera_x = 0;
+
+    player = spawn(FX(SCREEN_W / 2 - CHAR_W / 2), FX(FLOOR_DEPTH / 2),
+                   FACING_RIGHT);
+
+    /* A training dummy, with no behaviour at all. It is here because depth
+       cannot be seen with one character on an empty floor: there has to be
+       something for it to be in front of and behind. */
+    spawn(FX(SCREEN_W / 2 + 96), FX(FLOOR_DEPTH / 2), FACING_LEFT);
 }
 
 
@@ -496,15 +698,6 @@ static void show_stage(u8 visible) {
 }
 
 
-/// A sprite with a height of zero is switched off, which is how the character
-/// is kept out of the way on the title screen.
-static void show_hero(u8 visible) {
-    *REG_VRAMMOD = 0;
-    *REG_VRAMADDR = ADDR_SCB3 + FIRST_SPRITE;
-    *REG_VRAMRW = (((496 - hero_y) & 0x1ff) << 7) | (visible ? HERO_TILES_H : 0);
-}
-
-
 static void draw_menu(u8 selected) {
     for (u8 i = 0; i < MENU_ITEMS; i++) {
         /* The cursor is part of the string so that clearing it needs no
@@ -529,7 +722,7 @@ static u8 title_screen(void) {
 
     ng_cls();
     cover_screen();
-    show_hero(0);
+    hide_entities();
     show_stage(0);
     dissolve_in();
 
@@ -585,7 +778,7 @@ int main(void) {
     init_sky();
     init_scrolling_layer(HILLS_SPRITE, STAGE_HILLS_ROWS, STAGE_HILLS_Y);
     init_scrolling_layer(GROUND_SPRITE, STAGE_GROUND_ROWS, STAGE_GROUND_Y);
-    init_hero();
+    init_entities();
 
     /* Lay the scrolling layers out once before anything is drawn. Their
        columns only get an X when they are scrolled, and until then they would
@@ -607,7 +800,7 @@ int main(void) {
                goes: say goodbye, then offer the title screen again. */
             ng_cls();
             cover_screen();
-            show_hero(0);
+            hide_entities();
             show_stage(0);
             dissolve_in();
             ng_center_text(13, 0, "THANKS FOR PLAYING");
@@ -623,7 +816,7 @@ int main(void) {
 
         /* The dialogue is read against black, so nothing is left on screen
            behind it. It dissolves in itself and leaves the screen covered. */
-        show_hero(0);
+        hide_entities();
         show_stage(0);
         dialogue_run(&intro_dialogue);
 
@@ -631,25 +824,22 @@ int main(void) {
         cover_screen();
         show_stage(1);
 
-        /* Draw the character where it will actually stand before anything is
-           shown. Without this it sits at x=0 for the whole fade and then jumps
-           to the middle on the first frame of play. */
-        set_frame(HERO_WALK_ROW, 0, facing);
-        move_hero_to(hero_world_x - camera_x, hero_y);
-        show_hero(1);
+        /* Put the characters where they will actually stand before anything
+           is shown. Without this they sit at x=0 for the whole fade and then
+           jump into place on the first frame of play. */
+        reset_entities();
+        draw_entities();
 
         dissolve_in();
         play_sound(SND_KOTO);
-#ifdef HERO_CROUCH_ROW
-        ng_center_text(2, 0, "A D WALK  W JUMP  S CROUCH  J HIT");
-#else
-        ng_center_text(2, 0, "A D WALK   W JUMP   J HIT");
-#endif
+        ng_center_text(2, 0, "WASD MOVE   K JUMP   J HIT");
 
         for (;;) {
             wait_vblank();
             input_poll();
-            update_hero();
+            update_player(player);
+            update_camera(player);
+            draw_entities();
 
             /* The far hills move at a quarter of the floor's speed, which is
                what makes them read as distant. */
