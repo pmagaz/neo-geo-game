@@ -11,10 +11,11 @@ in section 4 was measured from the code and the art rather than estimated; if
 you are reading this after the migration has begun, the sections describing
 "today" are a snapshot and the code is the truth.
 
-**Progress: stage 1 is done.** The character art is scaled to 96 px, the stage
-is relaid out, and characters carry depth and height and move on the floor
-plane. Stage 2, the depth sorting and the shadows, is next. Section 9 records
-what has been decided and what is still open.
+**Progress: stage 1 is done, and so is the depth sorting from stage 2.** The
+character art is scaled to 96 px, the stage is relaid out, characters carry
+depth and height and move on the floor plane, and they are drawn in depth
+order. The shadows are what remains of stage 2. Section 9 records what has
+been decided and what is still open.
 
 ---
 
@@ -240,11 +241,14 @@ characters walk, and is what brings the scanline budget back under the limit:
 | Hills | 64 | 4 | 64-127 | quarter speed | 21 |
 | Ground | 128 | 6 | 128-223 | full speed | 21 |
 
-The walkable band is 128-199, with a 24-pixel apron at 200-223 below its front
-edge, which gives the floor somewhere to read as receding. `draw_hills` needs
-its three ridge baselines rescaled into a 64-pixel layer, and `draw_ground`
-needs to draw a floor plane across the band rather than a flat-topped ground
-line. It costs less sprite ROM than the current layout: 360 tiles against 400.
+The floor spans 128-199, with a 24-pixel apron at 200-223 below its front edge,
+which gives the floor somewhere to read as receding. `draw_hills` needs its
+three ridge baselines rescaled into a 64-pixel layer, and `draw_ground` needs
+to draw a floor plane across the band rather than a flat-topped ground line. It
+costs less sprite ROM than the current layout: 360 tiles against 400.
+
+The band a character may actually stand in is narrower than the floor: see
+flag I.
 
 ### D. `WORLD_WRAP` cannot coexist with camera bounds
 
@@ -291,6 +295,29 @@ emit pass inside vblank is what the audit in stage 5 is really guarding.
 Stages 2 through 5 cannot be tested with one entity: sorting by depth is
 invisible, and collision has nothing to hit. A stationary training dummy goes
 in during stage 1 so everything after it has something to test against.
+
+### I. The back of the floor needs a margin the characters cannot reach
+
+Found by playing stage 1 rather than by reading it. With depth clamped to
+0, a character at the back had its feet on the ground layer's very top edge
+and the hills starting on the next scanline. With nothing behind its feet it
+read as standing on the horizon, and since its whole body was then against
+the sky and the ridges, as hovering there.
+
+So the walkable band is not the whole floor. `FLOOR_BACK` rows - 16 - are
+floor that can be seen behind a character but never reached, and depth is
+clamped to `FLOOR_BACK..FLOOR_DEPTH-1`. The band is 56 rows deep rather than
+72.
+
+The alternative was moving the whole 72-row band down instead, which puts the
+front row's feet at screen line 215, inside the bottom sixteen lines that
+`ASSET_SPECS.md` warns fall outside a real TV's picture. Widening the ground
+layer upwards instead would have had to come out of the sky, which is only
+128 rows to begin with.
+
+This also settles the head clipping in section 9: at depth 16 a 45-pixel jump
+puts the top of the sprite at screen line 3 rather than -13, so nothing is
+lost off the top any more.
 
 ### H. There is no shadow art, and no alpha to draw it with
 
@@ -357,21 +384,30 @@ ground faster than a straight line. Depth must stop dead at both edges of the
 band. A jump must land exactly on the floor from any depth, and the character
 must not disappear at the end of it.
 
-### Stage 2 — y-sorting and shadows
+### Stage 2 — y-sorting and shadows — sorting done, shadows to go
 
-Regenerate the stage to the layout in flag C. Add `src/render.c`: insertion
-sort the entity array by depth — it is almost always already sorted — then emit
-the entity at rank *i* into the sprite block at `FIRST_SPRITE + i * 7`, three
-sprites of shadow followed by four of body so the shadow draws behind its owner.
-Keep a per-block cache of which entity, animation row, frame and facing it
-currently holds, and skip the SCB1 rewrite when nothing about that rank changed;
-depth order is stable most frames, so most blocks keep their contents.
+The sorting is in, and the stage is relaid out. The entity array is
+insertion-sorted by depth — as a permutation kept from frame to frame, so it
+is a handful of comparisons rather than a full sort — and the character at
+rank *i* is emitted into the block at `FIRST_SPRITE + i * 7`. Equal depths
+compare strictly, so ties keep last frame's order rather than swapping every
+frame and flickering, and empty slots sort past the end of the floor so the
+drawing loop stops at the first one.
 
 A rank with no entity gets a height of zero on both chain leaders. The
 followers inherit it, which is exactly how `show_stage` already switches the
 sky off.
 
-Generate the shadow asset.
+Still to do: the shadow. Three sprites are already reserved ahead of each
+body, at zero height, so they will draw behind their owner as soon as there is
+art for them. Generate that asset per flag H and emit it at the character's
+`(x, z)` with `air` ignored.
+
+The per-block cache of which character, animation row, frame and facing a
+block holds — to skip the SCB1 rewrite when a rank's contents have not changed
+— is deliberately not in. It is not needed yet: the whole emit pass costs
+about 7,000 cycles of a 30,000-cycle blanking window. It belongs with the
+stage 5 audit if that ever gets tight.
 
 **Test by hand.** Walk the character past the dummy: it must pass cleanly in
 front when it is nearer and behind when it is further, with no flicker as they
@@ -441,7 +477,8 @@ is derived from:
 |---|---|
 | Screen | 320 x 224, fixed, 4:3, no scaling |
 | HUD | scanlines 0-31 |
-| Floor band | 72 scanlines: depth 0 at screen Y 128, depth 71 at 199 |
+| Floor | 72 scanlines: depth 0 at screen Y 128, depth 71 at 199 |
+| Walkable band | depth 16 to 71, the first 16 rows being floor behind the back limit — see flag I |
 | Sprite origin | the feet |
 | Screen Y of the top | `FLOOR_TOP + z - air - CHAR_H` |
 | Depth speed | 65% of horizontal; diagonals no faster than horizontal |
@@ -492,21 +529,20 @@ Settled, and built in stage 1:
 
 3. **The stage is relaid out** into stacked layers. (flag C)
 
+Settled after playing stage 1:
+
+4. **The floor keeps a 16-row margin behind the back walk limit**, so a
+   character at the back has ground behind its feet rather than the horizon.
+   (flag I)
+
+   This also closed an open question about a jump at the back clipping the top
+   of the head off the screen. At depth 0 a 45 px jump put the top of the
+   sprite at -13; at depth 16 it puts it at 3, and nothing is lost. The head
+   still crosses the HUD's scanlines, which is correct and free — the HUD is
+   on the fix layer, and that draws over every sprite.
+
 Still open:
 
-4. **Retire `HERO=old`?** Nothing has been done to it. It still builds its
+5. **Retire `HERO=old`?** Nothing has been done to it. It still builds its
    sheet, but it is 4 x 4 tiles rather than 4 x 6 and its crouch animation is
    no longer reachable, so it is untested against the floor plane. (risk 4)
-
-5. **A jump at the back of the floor clips the top of the head.** Found while
-   verifying stage 1. At depth 0 the feet are on line 128 and the character is
-   96 px tall, so a 45 px jump puts the top of the sprite at -13 and about 13
-   rows are lost off the top of the screen.
-
-   It is not a collision with the HUD - the HUD is on the fix layer, which
-   draws over every sprite, so a jumping character correctly passes behind it.
-   It is only the screen edge. Three ways out: leave it, since it is brief and
-   only at the very back; lower the jump from 9 to 7, which peaks at 28 px and
-   clears; or accept the head clipping as the cost of a floor that starts as
-   high as it does. This is a question about how the jump should feel, so it
-   is being left alone until the shadows are in and it can be judged properly.
