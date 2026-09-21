@@ -10,7 +10,18 @@ Three layers, each 320 pixels wide, scrolled at its own rate:
 
     sky     stars and the moon, never moves
     hills   the ridges, scrolled slowly so they read as distant
-    ground  the floor, scrolled with the character
+    ground  the floor the characters walk on, scrolled with the camera
+
+The layers are stacked rather than overlapped, and that is deliberate. The
+characters move through a band of depth on the floor, and the hardware only
+draws 96 sprites on any one scanline - so if two parallax layers reached
+down into that band, their columns would spend the budget the characters
+need. The sky stops where the hills start and the hills stop where the floor
+starts, which leaves the whole floor band paid for by one layer.
+
+It also keeps the floor moving at one speed. The hills scroll at a quarter
+of the camera's rate; a floor that was partly hills would slide at different
+speeds at the back and the front of the same band.
 
 The scrolling layers repeat every 320 pixels, so they have to be seamless:
 the right edge must join the left edge exactly. The ridges are therefore
@@ -31,11 +42,17 @@ from PIL import Image, ImageDraw
 
 W = 320
 
-# Where each layer sits on screen and how tall it is. The sky reaches down
-# behind the hills; the hills are transparent above their ridges.
-SKY_Y, SKY_H = 0, 192
-HILLS_Y, HILLS_H = 112, 80
-GROUND_Y, GROUND_H = 176, 48
+# Where each layer sits on screen and how tall it is, in whole tiles of 16.
+# The hills are transparent above their ridges and opaque below them, so the
+# sky only has to reach as far as the highest ridge; each layer is otherwise
+# responsible for its own slice of the screen and nothing else.
+#
+# The floor starts at 128 because the HUD owns lines 0-31 and the character is
+# 96 px tall: 32 + 96 is the first line its feet can reach without its head
+# crossing into the HUD.
+SKY_Y, SKY_H = 0, 128
+HILLS_Y, HILLS_H = 64, 64
+GROUND_Y, GROUND_H = 128, 96
 
 # Index 0 must stay transparent, so the stage draws with indices 1-15.
 PALETTE = [
@@ -76,35 +93,41 @@ def ridge(im, terms, base_y, color):
     d.polygon(pts + [(W, im.height), (0, im.height)], fill=color)
 
 
+def dither_join(im, y, height, upper, lower):
+    """Blend two flat bands into each other across `height` rows at `y`.
+
+    Fifteen colours do not stretch to a smooth gradient, so the boundaries
+    between flat bands are stippled instead. This is how the era's artists
+    faked extra shades, and it reads far better than a hard line.
+    """
+    for row in range(height):
+        yy = y - height // 2 + row
+        if not 0 <= yy < im.height:
+            continue
+        density = row / (height - 1)
+        for x in range(W):
+            checker = (x + yy) % 2 == 0
+            if density > 0.66:
+                im.putpixel((x, yy), lower)
+            elif density > 0.33:
+                im.putpixel((x, yy), lower if checker else upper)
+            elif density > 0.1 and checker and (x // 2 + yy // 2) % 2 == 0:
+                im.putpixel((x, yy), lower)
+
+
 def draw_sky(args):
     im = new_layer(SKY_H, 1)
     d = ImageDraw.Draw(im)
     rng = random.Random(args.seed)
 
-    # Banded, because 15 colours do not stretch to a smooth gradient. The
-    # boundaries are dithered, which is how the era's artists faked extra
-    # shades and reads far better than a hard line.
+    # Banded, getting brighter towards the horizon, with the joins stippled.
     bands = [(0, 0.34, 1), (0.34, 0.62, 2), (0.62, 0.86, 3), (0.86, 1.0, 4)]
     for lo, hi, color in bands:
         d.rectangle([0, int(SKY_H * lo), W, int(SKY_H * hi)], fill=color)
 
-    dither_h = 12
     for i in range(len(bands) - 1):
-        boundary = int(SKY_H * bands[i][1])
-        upper, lower = bands[i][2], bands[i + 1][2]
-        for row in range(dither_h):
-            y = boundary - dither_h // 2 + row
-            if not 0 <= y < SKY_H:
-                continue
-            density = row / (dither_h - 1)
-            for x in range(W):
-                checker = (x + y) % 2 == 0
-                if density > 0.66:
-                    im.putpixel((x, y), lower)
-                elif density > 0.33:
-                    im.putpixel((x, y), lower if checker else upper)
-                elif density > 0.1 and checker and (x // 2 + y // 2) % 2 == 0:
-                    im.putpixel((x, y), lower)
+        dither_join(im, int(SKY_H * bands[i][1]), 12,
+                    bands[i][2], bands[i + 1][2])
 
     # Stars, thinning out towards the brighter horizon.
     for _ in range(110):
@@ -120,24 +143,56 @@ def draw_sky(args):
 
 
 def draw_hills(args):
-    """Ridges drawn on transparent, so the sky shows through above them."""
+    """Ridges drawn on transparent, so the sky shows through above them.
+
+    The baselines are set so the nearest ridge is opaque all the way to the
+    bottom edge of the layer. The floor begins there, and a transparent gap
+    between the two would show the backdrop colour as a seam across the
+    screen.
+    """
     im = new_layer(HILLS_H, 0)
-    ridge(im, [(1, 6, 0.0), (2, 3, 1.1), (3, 2, 2.3)], 34, 7)
-    ridge(im, [(1, 5, 2.0), (3, 3, 0.4), (5, 2, 1.7)], 50, 6)
-    ridge(im, [(2, 4, 1.0), (3, 2, 2.9), (7, 1, 0.2)], 64, 8)
+    ridge(im, [(1, 6, 0.0), (2, 3, 1.1), (3, 2, 2.3)], 27, 7)
+    ridge(im, [(1, 5, 2.0), (3, 3, 0.4), (5, 2, 1.7)], 40, 6)
+    ridge(im, [(2, 4, 1.0), (3, 2, 2.9), (7, 1, 0.2)], 51, 8)
     return im
 
 
 def draw_ground(args):
+    """The floor plane, seen at a shallow angle.
+
+    The first `--floor-depth` rows are the walkable band: the depth a
+    character's feet can occupy, one row per unit of depth. The rest is the
+    apron in front of it, which nothing stands on but which stops the floor
+    ending in mid-air at the bottom of the screen.
+
+    The depth is painted in, not projected. Nothing here may scale - the
+    layer is drawn once and scrolled, and the characters keep one size at
+    every depth by design - so the only cues available are the banding across
+    the band and the texture coarsening towards the viewer.
+    """
     im = new_layer(GROUND_H, 0)
     d = ImageDraw.Draw(im)
     rng = random.Random(args.seed + 3)
-    top = args.ground - GROUND_Y          # the ground line, within this layer
+    depth = args.floor_depth
 
-    d.rectangle([0, top, W, GROUND_H], fill=10)
-    d.rectangle([0, top, W, top + 2], fill=12)
-    d.rectangle([0, top + 3, W, top + 7], fill=11)
-    d.rectangle([0, top + 22, W, GROUND_H], fill=9)
+    # Where the floor meets the ridges behind it: a dark seam under a lit lip,
+    # so the join reads as a step up rather than as a change of colour.
+    d.rectangle([0, 0, W, 3], fill=13)
+    d.rectangle([0, 4, W, 6], fill=12)
+
+    # Three bands across the walkable depth, darkest at the back. Mid-toned
+    # throughout rather than running dark to light, because a character and
+    # its shadow have to read against the floor at every depth - a floor that
+    # went black at one end would swallow them there.
+    top = 7
+    span = depth - top
+    bands = [(0.00, 0.34, 10), (0.34, 0.68, 11), (0.68, 1.00, 12)]
+    for lo, hi, color in bands:
+        d.rectangle([0, top + int(span * lo), W, top + int(span * hi)],
+                    fill=color)
+    for i in range(len(bands) - 1):
+        dither_join(im, top + int(span * bands[i][1]), 8,
+                    bands[i][2], bands[i + 1][2])
 
     # Stones and scrub. Anything crossing an edge is drawn on the other side
     # too, so the layer still joins up where it repeats.
@@ -146,13 +201,30 @@ def draw_ground(args):
         if x + w >= W:
             d.rectangle([x - W, y, x - W + w, y + h], fill=color)
 
-    for _ in range(46):
-        blot(rng.randrange(W), rng.randrange(top + 6, GROUND_H - 2),
-             rng.choice([1, 1, 2]), rng.choice([1, 1, 2]),
+    # Coarser towards the front: one stone covers more pixels when it is
+    # nearer, and that change down the band is most of what makes it read as
+    # a floor receding rather than as a striped wall.
+    for _ in range(150):
+        y = rng.randrange(top + 2, depth)
+        near = (y - top) / span
+        size = 1 + int(near * 2.4)
+        blot(rng.randrange(W), y, rng.randrange(1, size + 1), max(1, size - 1),
              rng.choice([13, 13, 9, 15]))
-    for _ in range(30):
-        blot(rng.randrange(W), rng.randrange(top - 1, top + 4),
+
+    # Scrub along the back edge, where the floor meets the ridges.
+    for _ in range(34):
+        blot(rng.randrange(W), rng.randrange(top, top + 5),
              rng.choice([1, 2]), 1, 14)
+
+    # The apron. Darker than the band above it, so the front edge of the
+    # walkable floor is visible - a player needs to see where the floor stops
+    # before walking into it.
+    d.rectangle([0, depth, W, GROUND_H], fill=9)
+    d.rectangle([0, depth, W, depth + 1], fill=13)
+    for _ in range(44):
+        blot(rng.randrange(W), rng.randrange(depth + 3, GROUND_H - 2),
+             rng.choice([1, 2, 3]), rng.choice([1, 2]),
+             rng.choice([13, 9, 10]))
     return im
 
 
@@ -162,10 +234,19 @@ def main():
     p.add_argument("--outdir", default="assets", help="where to write the GIFs")
     p.add_argument("--header", required=True, help="C header to write")
     p.add_argument("--name", default="stage", help="identifier prefix")
-    p.add_argument("--ground", type=int, default=192,
-                   help="y of the ground line the character stands on")
+    p.add_argument("--floor-depth", type=int, default=72, metavar="ROWS",
+                   help="scanlines of depth the characters walk through, "
+                        "measured down from the top of the ground layer")
     p.add_argument("--seed", type=int, default=7, help="scenery random seed")
     args = p.parse_args()
+
+    # The band has to leave room for an apron in front of it, or the floor
+    # ends at the bottom edge of the screen and the front row of characters
+    # stands on nothing.
+    if not 16 <= args.floor_depth < GROUND_H:
+        raise SystemExit(f"error: --floor-depth must be between 16 and "
+                         f"{GROUND_H - 1}, the ground layer being "
+                         f"{GROUND_H} px tall")
 
     layers = [
         ("sky", draw_sky(args), SKY_Y, SKY_H),
@@ -191,8 +272,12 @@ def write_header(args, layers):
     with open(args.header, "w") as f:
         f.write("/* Generated by tools/make_stage.py - do not edit. */\n")
         f.write(f"#ifndef {up}_H\n#define {up}_H\n\n")
-        f.write(f"#define {up}_COLS {W // 16}\n")
-        f.write(f"#define {up}_FLOOR_Y {args.ground}\n\n")
+        f.write(f"#define {up}_COLS {W // 16}\n\n")
+        f.write("/* The walkable floor plane: screen y of depth 0, and how\n"
+                "   many scanlines of depth there are. Feet at depth z land\n"
+                f"   on screen line {up}_FLOOR_TOP + z. */\n")
+        f.write(f"#define {up}_FLOOR_TOP {GROUND_Y}\n")
+        f.write(f"#define {up}_FLOOR_DEPTH {args.floor_depth}\n\n")
         for lname, im, y, h in layers:
             ln = f"{up}_{lname.upper()}"
             f.write(f"#define {ln}_Y {y}\n")

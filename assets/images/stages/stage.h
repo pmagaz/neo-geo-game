@@ -3,17 +3,22 @@
 #define STAGE_H
 
 #define STAGE_COLS 20
-#define STAGE_FLOOR_Y 192
+
+/* The walkable floor plane: screen y of depth 0, and how
+   many scanlines of depth there are. Feet at depth z land
+   on screen line STAGE_FLOOR_TOP + z. */
+#define STAGE_FLOOR_TOP 128
+#define STAGE_FLOOR_DEPTH 72
 
 #define STAGE_SKY_Y 0
-#define STAGE_SKY_ROWS 12
-#define STAGE_SKY_TILE_COUNT 240
-#define STAGE_HILLS_Y 112
-#define STAGE_HILLS_ROWS 5
-#define STAGE_HILLS_TILE_COUNT 100
-#define STAGE_GROUND_Y 176
-#define STAGE_GROUND_ROWS 3
-#define STAGE_GROUND_TILE_COUNT 60
+#define STAGE_SKY_ROWS 8
+#define STAGE_SKY_TILE_COUNT 160
+#define STAGE_HILLS_Y 64
+#define STAGE_HILLS_ROWS 4
+#define STAGE_HILLS_TILE_COUNT 80
+#define STAGE_GROUND_Y 128
+#define STAGE_GROUND_ROWS 6
+#define STAGE_GROUND_TILE_COUNT 120
 
 /* 16 colours, index 0 transparent. */
 static const u16 stage_palette[16] = {

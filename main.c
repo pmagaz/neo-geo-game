@@ -47,7 +47,11 @@
 #define WALK_SPEED 2
 #define JUMP_SPEED (-9)
 #define GRAVITY 1
-#define GROUND_LEVEL (STAGE_FLOOR_Y - CHAR_H)
+
+/* Halfway down the floor's depth, until the character carries a depth of its
+   own and this goes away. */
+#define GROUND_LEVEL \
+    (STAGE_FLOOR_TOP + STAGE_FLOOR_DEPTH / 2 - CHAR_H)
 
 /*
  * The camera only follows once the character leaves a dead zone in the middle
