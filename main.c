@@ -446,8 +446,8 @@ static void set_state(struct entity *e, enum state s) {
 /// Keep a character on the floor and inside the stage. Per-room depth limits,
 /// for a bridge or a corridor that narrows the floor, replace the band here.
 static void clamp_to_floor(struct entity *e) {
-    if (e->z < FX(0)) {
-        e->z = FX(0);
+    if (e->z < FX(FLOOR_Z_MIN)) {
+        e->z = FX(FLOOR_Z_MIN);
     } else if (e->z > FX(FLOOR_Z_MAX)) {
         e->z = FX(FLOOR_Z_MAX);
     }
@@ -586,27 +586,74 @@ static u16 anim_row(const struct entity *e) {
 
 
 /*
- * Write the characters to the sprite list.
+ * The order the characters are drawn in, furthest first.
+ *
+ * This is the depth illusion, and there is nothing else creating it: drawing
+ * order on this hardware is sprite order, so a character standing nearer the
+ * viewer has to be emitted into a higher-numbered block than one behind it,
+ * every frame, without exception. Get it wrong and the further character
+ * draws over the nearer one, which does not read as a mistake in the order -
+ * it reads as the further character hovering in mid-air.
+ *
+ * A permutation of every slot, kept from frame to frame rather than rebuilt.
+ * Depths change by about a pixel a frame, so the previous frame's order is
+ * almost always still correct and the insertion sort below walks it in a
+ * handful of comparisons. Eight entities would cost at most 28 even from
+ * scratch, so this never approaches being the frame's expensive part, and it
+ * allocates nothing.
+ */
+static u8 order[MAX_ENTITIES];
+
+static void init_order(void) {
+    for (u8 i = 0; i < MAX_ENTITIES; i++) {
+        order[i] = i;
+    }
+}
+
+/// Sort key: depth, with empty slots pushed past the end of the floor so they
+/// come last and the drawing loop can stop caring about them.
+static s16 depth_key(u8 slot) {
+    return ents[slot].active ? ents[slot].z : (s16)0x7fff;
+}
+
+static void sort_by_depth(void) {
+    for (u8 i = 1; i < MAX_ENTITIES; i++) {
+        u8 slot = order[i];
+        s16 key = depth_key(slot);
+        u8 j = i;
+
+        /* Strictly greater, so characters at equal depth keep the order they
+           had last frame. Ties that swapped every frame would flicker. */
+        while (j > 0 && depth_key(order[j - 1]) > key) {
+            order[j] = order[j - 1];
+            j--;
+        }
+        order[j] = slot;
+    }
+}
+
+
+/*
+ * Write the characters to the sprite list, furthest first.
  *
  * Every VRAM write in the frame happens here, and none of the movement above
- * touches the hardware. That split is what the sorting pass slots into: it
- * reorders which block each character is emitted into, and nothing in the
- * logic has to know.
- *
- * No sorting yet, so each character stays in its own block and a nearer one
- * does not yet draw in front of one further back.
+ * touches the hardware. Which block a character lands in is decided here too,
+ * by its depth, so nothing in the logic has to know about sprite numbering.
  */
 static void draw_entities(void) {
-    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
-        struct entity *e = &ents[slot];
+    sort_by_depth();
 
+    for (u16 rank = 0; rank < MAX_ENTITIES; rank++) {
+        struct entity *e = &ents[order[rank]];
+
+        /* Empty slots sort last, so the first one ends the characters. */
         if (!e->active) {
-            hide_body(ENT_BODY(slot));
+            hide_body(ENT_BODY(rank));
             continue;
         }
 
-        set_body_frame(ENT_BODY(slot), anim_row(e), e->frame, e->facing);
-        place_body(ENT_BODY(slot),
+        set_body_frame(ENT_BODY(rank), anim_row(e), e->frame, e->facing);
+        place_body(ENT_BODY(rank),
                    (s16)(FX_PX(e->x) - camera_x),
                    floor_screen_top(e->z, e->air, CHAR_H));
     }
@@ -644,15 +691,21 @@ static void reset_entities(void) {
     for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
         ents[slot].active = 0;
     }
+    init_order();
     camera_x = 0;
 
-    player = spawn(FX(SCREEN_W / 2 - CHAR_W / 2), FX(FLOOR_DEPTH / 2),
+    player = spawn(FX(SCREEN_W / 2 - CHAR_W / 2), FX(FLOOR_Z_MID),
                    FACING_RIGHT);
 
     /* A training dummy, with no behaviour at all. It is here because depth
        cannot be seen with one character on an empty floor: there has to be
-       something for it to be in front of and behind. */
-    spawn(FX(SCREEN_W / 2 + 96), FX(FLOOR_DEPTH / 2), FACING_LEFT);
+       something for it to be in front of and behind.
+
+       Placed further back than the player and close enough to walk into, so
+       that the drawing order is visible immediately rather than only after
+       hunting for an overlap. */
+    spawn(FX(SCREEN_W / 2 - CHAR_W / 2 + 72), FX(FLOOR_Z_MIN + 8),
+          FACING_LEFT);
 }
 
 
