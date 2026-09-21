@@ -160,38 +160,48 @@ def draw_hills(args):
 def draw_ground(args):
     """The floor plane, seen at a shallow angle.
 
-    The first `--floor-depth` rows are the walkable band: the depth a
-    character's feet can occupy, one row per unit of depth. The rest is the
-    apron in front of it, which nothing stands on but which stops the floor
+    Three regions down the layer. The first `--floor-back` rows are floor
+    behind the point a character may stand: without them the back row of
+    characters has its feet on the layer's top edge with the hills directly
+    behind, and reads as standing on the horizon rather than on the ground.
+    Then the walkable band, up to `--floor-depth`, one row per unit of depth.
+    Then the apron, which nothing stands on either but which stops the floor
     ending in mid-air at the bottom of the screen.
 
     The depth is painted in, not projected. Nothing here may scale - the
     layer is drawn once and scrolled, and the characters keep one size at
-    every depth by design - so the only cues available are the banding across
-    the band and the texture coarsening towards the viewer.
+    every depth by design - so the only cues available are the banding down
+    the layer and the texture coarsening towards the viewer.
     """
     im = new_layer(GROUND_H, 0)
     d = ImageDraw.Draw(im)
     rng = random.Random(args.seed + 3)
     depth = args.floor_depth
+    back = args.floor_back
 
     # Where the floor meets the ridges behind it: a dark seam under a lit lip,
     # so the join reads as a step up rather than as a change of colour.
     d.rectangle([0, 0, W, 3], fill=13)
     d.rectangle([0, 4, W, 6], fill=12)
 
+    # The floor behind the walk limit, in the darkest ground colour. Distance
+    # reading as shadow is the cue, so there is no drawn line at the limit
+    # itself - a hard edge there would look like a wall the characters stand
+    # in front of rather than floor they cannot reach.
+    d.rectangle([0, 7, W, back], fill=9)
+
     # Three bands across the walkable depth, darkest at the back. Mid-toned
     # throughout rather than running dark to light, because a character and
     # its shadow have to read against the floor at every depth - a floor that
     # went black at one end would swallow them there.
-    top = 7
-    span = depth - top
+    span = depth - back
     bands = [(0.00, 0.34, 10), (0.34, 0.68, 11), (0.68, 1.00, 12)]
     for lo, hi, color in bands:
-        d.rectangle([0, top + int(span * lo), W, top + int(span * hi)],
+        d.rectangle([0, back + int(span * lo), W, back + int(span * hi)],
                     fill=color)
+    dither_join(im, back, 8, 9, bands[0][2])
     for i in range(len(bands) - 1):
-        dither_join(im, top + int(span * bands[i][1]), 8,
+        dither_join(im, back + int(span * bands[i][1]), 8,
                     bands[i][2], bands[i + 1][2])
 
     # Stones and scrub. Anything crossing an edge is drawn on the other side
@@ -202,18 +212,24 @@ def draw_ground(args):
             d.rectangle([x - W, y, x - W + w, y + h], fill=color)
 
     # Coarser towards the front: one stone covers more pixels when it is
-    # nearer, and that change down the band is most of what makes it read as
+    # nearer, and that change down the layer is most of what makes it read as
     # a floor receding rather than as a striped wall.
     for _ in range(150):
-        y = rng.randrange(top + 2, depth)
-        near = (y - top) / span
+        y = rng.randrange(back + 2, depth)
+        near = (y - back) / span
         size = 1 + int(near * 2.4)
         blot(rng.randrange(W), y, rng.randrange(1, size + 1), max(1, size - 1),
              rng.choice([13, 13, 9, 15]))
 
+    # A little texture on the floor behind the walk limit too, finer and
+    # sparser. Left plain it reads as a flat band rather than as ground.
+    for _ in range(30):
+        blot(rng.randrange(W), rng.randrange(8, max(9, back)), 1, 1,
+             rng.choice([13, 10]))
+
     # Scrub along the back edge, where the floor meets the ridges.
     for _ in range(34):
-        blot(rng.randrange(W), rng.randrange(top, top + 5),
+        blot(rng.randrange(W), rng.randrange(7, 12),
              rng.choice([1, 2]), 1, 14)
 
     # The apron. Darker than the band above it, so the front edge of the
@@ -235,8 +251,11 @@ def main():
     p.add_argument("--header", required=True, help="C header to write")
     p.add_argument("--name", default="stage", help="identifier prefix")
     p.add_argument("--floor-depth", type=int, default=72, metavar="ROWS",
-                   help="scanlines of depth the characters walk through, "
-                        "measured down from the top of the ground layer")
+                   help="scanlines of depth the floor spans, measured down "
+                        "from the top of the ground layer")
+    p.add_argument("--floor-back", type=int, default=16, metavar="ROWS",
+                   help="floor behind the furthest a character may stand, so "
+                        "the back row has ground behind its feet")
     p.add_argument("--seed", type=int, default=7, help="scenery random seed")
     args = p.parse_args()
 
@@ -247,6 +266,12 @@ def main():
         raise SystemExit(f"error: --floor-depth must be between 16 and "
                          f"{GROUND_H - 1}, the ground layer being "
                          f"{GROUND_H} px tall")
+    # 16 rows of walkable band is already very shallow; less than that is
+    # not a beat-'em-up floor at all.
+    if not 8 <= args.floor_back <= args.floor_depth - 16:
+        raise SystemExit(f"error: --floor-back must be between 8 and "
+                         f"{args.floor_depth - 16}, leaving at least 16 rows "
+                         f"of a {args.floor_depth}-row floor to walk on")
 
     layers = [
         ("sky", draw_sky(args), SKY_Y, SKY_H),
@@ -273,11 +298,18 @@ def write_header(args, layers):
         f.write("/* Generated by tools/make_stage.py - do not edit. */\n")
         f.write(f"#ifndef {up}_H\n#define {up}_H\n\n")
         f.write(f"#define {up}_COLS {W // 16}\n\n")
-        f.write("/* The walkable floor plane: screen y of depth 0, and how\n"
-                "   many scanlines of depth there are. Feet at depth z land\n"
-                f"   on screen line {up}_FLOOR_TOP + z. */\n")
+        f.write("/* The floor plane: screen y of depth 0, and how many\n"
+                "   scanlines of depth there are. Feet at depth z land on\n"
+                f"   screen line {up}_FLOOR_TOP + z.\n"
+                "\n"
+                "   FLOOR_BACK is how much of that floor sits behind the\n"
+                "   furthest a character may stand, so the back row has\n"
+                "   ground behind its feet instead of the horizon. Depth is\n"
+                "   therefore clamped to FLOOR_BACK..FLOOR_DEPTH-1, not to\n"
+                f"   0..FLOOR_DEPTH-1. */\n")
         f.write(f"#define {up}_FLOOR_TOP {GROUND_Y}\n")
-        f.write(f"#define {up}_FLOOR_DEPTH {args.floor_depth}\n\n")
+        f.write(f"#define {up}_FLOOR_DEPTH {args.floor_depth}\n")
+        f.write(f"#define {up}_FLOOR_BACK {args.floor_back}\n\n")
         for lname, im, y, h in layers:
             ln = f"{up}_{lname.upper()}"
             f.write(f"#define {ln}_Y {y}\n")

@@ -41,12 +41,24 @@
 #define FX_PX(v) ((s16)((v) >> FX_BITS))
 
 /*
- * The walkable band, from the generated stage header so that the art and the
- * movement cannot disagree about where the floor is.
+ * The floor, from the generated stage header so that the art and the movement
+ * cannot disagree about where it is.
+ *
+ * The walkable band is not the whole floor. FLOOR_BACK rows of it sit behind
+ * the furthest a character may stand, because a character whose feet are on
+ * the floor's very top edge has the hills immediately behind them and reads
+ * as standing on the horizon rather than on the ground. Depth is clamped to
+ * FLOOR_Z_MIN..FLOOR_Z_MAX, and the rows above that are floor the characters
+ * can be seen against but never reach.
+ *
+ * Per-room limits narrow this further, for a bridge or a corridor; they never
+ * widen it past these.
  */
 #define FLOOR_TOP STAGE_FLOOR_TOP
 #define FLOOR_DEPTH STAGE_FLOOR_DEPTH
+#define FLOOR_Z_MIN STAGE_FLOOR_BACK
 #define FLOOR_Z_MAX (FLOOR_DEPTH - 1)
+#define FLOOR_Z_MID ((FLOOR_Z_MIN + FLOOR_Z_MAX) / 2)
 
 /*
  * Screen y of the top edge of a sprite whose feet are at (z, air).

@@ -4,11 +4,18 @@
 
 #define STAGE_COLS 20
 
-/* The walkable floor plane: screen y of depth 0, and how
-   many scanlines of depth there are. Feet at depth z land
-   on screen line STAGE_FLOOR_TOP + z. */
+/* The floor plane: screen y of depth 0, and how many
+   scanlines of depth there are. Feet at depth z land on
+   screen line STAGE_FLOOR_TOP + z.
+
+   FLOOR_BACK is how much of that floor sits behind the
+   furthest a character may stand, so the back row has
+   ground behind its feet instead of the horizon. Depth is
+   therefore clamped to FLOOR_BACK..FLOOR_DEPTH-1, not to
+   0..FLOOR_DEPTH-1. */
 #define STAGE_FLOOR_TOP 128
 #define STAGE_FLOOR_DEPTH 72
+#define STAGE_FLOOR_BACK 16
 
 #define STAGE_SKY_Y 0
 #define STAGE_SKY_ROWS 8
