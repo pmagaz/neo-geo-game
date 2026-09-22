@@ -11,11 +11,12 @@ in section 4 was measured from the code and the art rather than estimated; if
 you are reading this after the migration has begun, the sections describing
 "today" are a snapshot and the code is the truth.
 
-**Progress: stage 1 is done, and so is the depth sorting from stage 2.** The
-character art is scaled to 96 px, the stage is relaid out, characters carry
-depth and height and move on the floor plane, and they are drawn in depth
-order. The shadows are what remains of stage 2. Section 9 records what has
-been decided and what is still open.
+**Progress: stages 1 and 2 are done, and attacks connect.** The character art
+is scaled to 96 px, the stage is relaid out, characters carry depth and height
+and move on the floor plane, they are drawn in depth order, and each has a
+shadow. From stage 3, attacks land with a depth tolerance and a hit reaction;
+body overlap is the part still outstanding. Section 9 records what has been
+decided and what is still open.
 
 ---
 
@@ -384,7 +385,7 @@ ground faster than a straight line. Depth must stop dead at both edges of the
 band. A jump must land exactly on the floor from any depth, and the character
 must not disappear at the end of it.
 
-### Stage 2 — y-sorting and shadows — sorting done, shadows to go
+### Stage 2 — y-sorting and shadows — done
 
 The sorting is in, and the stage is relaid out. The entity array is
 insertion-sorted by depth — as a permutation kept from frame to frame, so it
@@ -398,10 +399,9 @@ A rank with no entity gets a height of zero on both chain leaders. The
 followers inherit it, which is exactly how `show_stage` already switches the
 sky off.
 
-Still to do: the shadow. Three sprites are already reserved ahead of each
-body, at zero height, so they will draw behind their owner as soon as there is
-art for them. Generate that asset per flag H and emit it at the character's
-`(x, z)` with `air` ignored.
+The shadow is in too: three sprites ahead of each body in the same block, so
+it draws behind its owner, emitted at the character's `(x, z)` with `air`
+ignored. It is a stippled ellipse, 48 x 16, for the reasons in flag H.
 
 The per-block cache of which character, animation row, frame and facing a
 block holds — to skip the SCB1 rewrite when a rank's contents have not changed
@@ -414,17 +414,27 @@ front when it is nearer and behind when it is further, with no flicker as they
 cross. The shadow must stay pinned to the floor through a whole jump while the
 body rises away from it. The title screen must still hide everything.
 
-### Stage 3 — splitting collision in two
+### Stage 3 — splitting collision in two — attacks done, body overlap to go
 
-In `src/entity.c`, two separate systems:
+Two separate systems:
 
 **Body overlap** is an AABB in x and z only, with push-apart, so characters
-cannot stand inside one another. Air is not consulted.
+cannot stand inside one another. Air is not consulted. **This is the part
+still outstanding.**
 
-**Attack connection** needs all three of an x range in front of the attacker
-(flipped by facing), a depth half-extent, and an overlap between the attack's
-`[air_lo, air_hi]` band and the target's, so that a low attack misses an
-airborne target.
+**Attack connection** is in. It needs all three of an x range in front of the
+attacker (flipped by facing), a depth half-extent, and a height test so that a
+blow thrown along the floor misses an airborne target. The box is live for
+frames 3 to 5 of the eight-frame swing, and a `struck` flag retires it once it
+connects — without that it lands on every one of the nine frames it is live
+for, which reads as the target being held in the flash rather than as one
+blow.
+
+Being hit is its own state: stunned, pushed away from the attacker with the
+knockback decaying under it, and drawn for six frames in a palette where every
+colour is white. The hurt animation borrows two frames of the attack, since
+there is no hit-reaction art; that is the one animation standing in for
+something.
 
 The specification lists "x/z hitbox overlap" and "z alignment within a
 tolerance" as two conditions, but on the depth axis they are the same test.
@@ -546,3 +556,12 @@ Still open:
 5. **Retire `HERO=old`?** Nothing has been done to it. It still builds its
    sheet, but it is 4 x 4 tiles rather than 4 x 6 and its crouch animation is
    no longer reachable, so it is untested against the floor plane. (risk 4)
+
+6. **Real hit-reaction art.** The hurt animation borrows attack frames 1 and
+   2. They read as a recoil and carry the hit alongside the flash and the
+   knockback, but they are not a hit reaction, and the borrow is one line of
+   the makefile to replace.
+
+7. **`ATK_PUNCH_Z_TOL` is 10 because 10 is a round number.** It is the single
+   value the game's feel rests on and it has not been tuned by playing. Expect
+   to change it.
