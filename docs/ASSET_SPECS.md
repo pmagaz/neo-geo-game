@@ -3,11 +3,13 @@
 What the game needs from a piece of art, why, and how to ask an image
 generator for it.
 
-Every number here is what the code actually uses today. The sizes the game
-works in are generated into headers (`assets/images/sprites/hero.h`,
-`assets/images/stages/stage.h`) and the build reads them from there, so this
-document and the game cannot drift apart silently — but if you change a size,
-change it in the makefile, not here.
+Every number here is what the code uses today. The sizes the game works in are
+generated into `assets/images/sprites/hero.h` and
+`assets/images/stages/stage.h`, and the build reads them from there — so those
+two headers are the truth and this document is a copy of it. It has gone stale
+once already, describing a stage layout two rewrites out of date, so **if a
+figure here matters to you, check it against the header** before drawing to
+it. If you change a size, change it in the makefile.
 
 ---
 
@@ -44,50 +46,112 @@ cannot be drawn with, which is why the limit is 15 colours and not 16.
 
 | | |
 |---|---|
-| On screen | **64 × 64** px (4 × 4 tiles) |
-| Animations | walk 8 frames, attack 8, jump 5, crouch 3 |
-| Sprites used | 4 (one per 16 px of width) |
-| Feet stand on | y = 192 |
+| On screen | **56 × 96** px of art, in a 4 × 6 tile cell |
+| Animations | walk 8 frames, attack 8, jump 4, hurt 2 |
+| Sprites used | **7** — four for the body, three for its shadow |
+| Feet stand on | screen line 128 + depth, so anywhere from 144 to 199 |
 
-The source sheet does **not** have to be this size. `tools/prep_sheet.py`
-scales whatever you supply so the tallest frame becomes 64 pixels, and every
-frame is scaled by that same factor so the animation keeps its proportions.
-The current source is 647 × 718 with frames about 88 px tall.
+**96 pixels tall is not a preference.** The floor starts at line 128 and the
+HUD owns lines 0 – 31, so 128 − 32 is the tallest a character can be and still
+clear the HUD while standing at the back of the floor. It is also exactly six
+tiles, so no transparent row is carried around costing sprite budget.
+
+The source sheet does **not** have to be this size. Both `tools/gifs2sheet.py`
+and `tools/prep_sheet.py` take `--height`, and scale whatever you supply so
+the tallest frame becomes that many pixels — every frame by the same factor,
+so the animation keeps its proportions and the character does not change size
+between animations.
 
 Drawing larger than the target and letting the build scale down is fine and
-usually looks better than drawing at 64 px directly. Two to three times the
+usually looks better than drawing at 96 px directly. Two to three times the
 final size is a good range; beyond that, detail is lost in the reduction
 anyway.
 
+There is no hit-reaction art yet: the hurt animation borrows two frames of the
+attack. A real two- or three-frame recoil is the most useful thing that could
+be added to this character.
+
 ### The stage
 
-Three layers, each **320 pixels wide** — one screen — scrolled at different
-speeds. All three share a single 15-colour palette.
+Three layers, each **exactly 320 pixels wide** — one screen — stacked rather
+than overlapped, and scrolled at different rates.
 
-| Layer | Size | Sits at | Scrolls | Must tile |
-|---|---|---|---|---|
-| Sky | 320 × 192 | y = 0 | never | no |
-| Hills | 320 × 80 | y = 112 | ¼ speed | **yes** |
-| Ground | 320 × 48 | y = 176 | full speed | **yes** |
+| Layer | Image size | Covers screen lines | Scrolls | Must tile | Transparency |
+|---|---|---|---|---|---|
+| Sky | **320 × 128** | 0 – 127 | never | no | none: opaque everywhere |
+| Hills | **320 × 64** | 64 – 127 | ¼ speed | **yes** | above the rooflines |
+| Ground | **320 × 96** | 128 – 223 | full speed | **yes** | none: opaque everywhere |
 
-The floor line — where the character's feet land — is at **y = 192**, which is
-16 pixels down the ground layer.
+They are stacked and not overlapped for two reasons, and both are worth
+knowing before drawing anything. The hardware draws only 96 sprites on a
+scanline, and a layer costs 20 or 21 of them on every line it covers — so two
+layers reaching into the band where the fighting happens would spend the
+budget the characters need. And the floor has to move at one speed: the hills
+scroll at a quarter of the camera's rate, so a floor that was partly hills
+would slide at two different rates between its back and its front.
 
-The hills layer is transparent above its ridges so the sky shows through. The
-two scrolling layers repeat every 320 pixels, so their left and right edges
-must join **exactly**: a one-pixel mismatch becomes a seam crossing the screen
-every few seconds.
+```
+  line   0 ┌──────────────────────────────────────┐
+           │ HUD - lives, score, timer            │  drawn on the text layer,
+        31 │ (reserved; nothing is drawn here)    │  over every sprite
+           │                                      │
+           │  SKY            320 x 128            │  never moves
+        63 │                                      │
+        64 ├──────────────────────────────────────┤
+           │  HILLS          320 x 64             │  quarter speed
+           │  transparent above the rooflines,    │  tiles horizontally
+       127 │  fully opaque along its bottom edge  │
+       128 ├──────────────────────────────────────┤
+           │  GROUND         320 x 96             │  full speed
+           │   128-143  behind the walk limit     │  tiles horizontally
+           │   144-199  the walkable band         │
+           │   200-223  the apron                 │
+       223 └──────────────────────────────────────┘
+```
+
+### The three parts of the ground layer
+
+The ground is the layer that needs the most explaining, because it is not a
+wall seen from the side — it is **a floor seen at a shallow angle**, receding
+away from the viewer. Its 96 pixels are three bands with different jobs:
+
+| Rows in the image | Screen lines | What it is |
+|---|---|---|
+| 0 – 15 | 128 – 143 | Floor **behind** the furthest a character can stand. It exists so the back row has ground behind its feet rather than the horizon. |
+| 16 – 71 | 144 – 199 | **The walkable band.** Every character stands somewhere in these 56 lines. One line of the image is one unit of depth. |
+| 72 – 95 | 200 – 223 | **The apron**, in front of the walk limit. Nothing stands on it; it stops the floor ending in mid-air at the bottom of the screen. |
+
+Two things follow from that middle band. It should read as **ground going away
+from you**, which is done with banding and with texture getting coarser
+towards the bottom, since nothing can be scaled to fake perspective. And it
+should stay **fairly plain and mid-toned** — every character and every shadow
+in the game is drawn on top of it, and a busy or very dark floor swallows
+them.
+
+### The one palette
+
+**All three layers share a single 15-colour palette.** Not 15 each — 15 for
+the whole stage, plus transparent. This is the constraint that most often
+ruins generated stage art: three images drawn independently arrive with three
+unrelated colour schemes, and forcing them into 15 shared colours afterwards
+leaves all three muddy.
+
+So ask for a **deliberately limited, shared palette across all three layers**,
+and prefer art that already looks like it was painted with a dozen colours.
+Night scenes are forgiving here; bright daylight with a blue sky, green trees
+and warm stone is not.
 
 ### Room left
 
 | | |
 |---|---|
-| Sprite ROM used | 1,168 tiles of 16,384 — about 7% |
-| Busiest scanline | 66 sprites of 96 |
-| Spare | 30 sprites ≈ **7 more 64-px-wide characters** at once |
+| Sprite ROM used | 1,390 tiles of 16,384 — about 8% |
+| Busiest scanline | 67 sprites of 96, with six characters fighting |
+| Spare | room for about **ten characters** on the floor at once |
 
-Enemies are limited by that 96-per-line budget, not by memory. Three
-background layers cost 62 of the 66 currently used.
+Enemies are limited by that 96-per-line budget, not by memory. In the walkable
+band the ground layer costs 21 sprites, each character costs 7 (four for the
+body, three for its shadow), and the impact sparks cost one each.
 
 ---
 
@@ -131,7 +195,8 @@ the art and fix the layout, and write the prompt to minimise the fixing.
 > A pixel art sprite sheet of **[character]**, side view, facing right.
 >
 > Four rows of animation, in this order: row 1 walk cycle, 8 frames; row 2
-> attack, 8 frames; row 3 jump, 5 frames; row 4 crouch, 3 frames.
+> attack, 8 frames; row 3 jump, 4 frames; row 4 being hit, 3 frames —
+> recoiling backwards, head turned away, off balance.
 >
 > Every frame the same size, evenly spaced, with clear empty space between
 > each frame and between each row. Leave empty space below the last row.
@@ -150,23 +215,141 @@ alpha channel, and a saturated colour that appears nowhere in the art is
 trivial to key out cleanly. White is a poor choice — it collides with
 highlights, eyes and metal.
 
-### For a stage layer
+### For a stage
 
-> A seamless horizontally tiling pixel art **[sky / distant hills / ground]**
-> layer, exactly 320 pixels wide and **[192 / 80 / 48]** pixels tall.
->
-> The left and right edges must match exactly so the image repeats without a
-> visible seam.
->
-> Limited palette, at most 8 flat colours, no gradients, no anti-aliasing.
-> **[For hills and ground: everything above the terrain must be plain solid
-> magenta (#FF00FF) so it can be made transparent.]**
-> Side-on view, no perspective, no characters, no text.
+A stage is three layers that have to look like one place, so the thing to get
+right first is that they share an art direction and a palette. Two ways to ask
+for it, and the first is usually the better one.
 
-In practice, generated layers are rarely seamless. `tools/make_stage.py` draws
-the current stage in code instead, which guarantees it: the ridges are sine
-waves with a whole number of cycles across the width, so they cannot help but
-join up. For a generated layer you will likely need to fix the seam by hand.
+**Every prompt below should open with a context paragraph** — where this is,
+what time of day, what mood — because that is what makes the three layers
+agree with each other. The measurements alone produce three correct rectangles
+that do not belong in the same scene.
+
+#### One image, three panels
+
+One request, one image, all three layers stacked in it with magenta gutters
+between them. The panels are cut apart afterwards. This keeps the palette and
+the lighting consistent for free, because the model drew them together.
+
+The image is **320 × 320**, laid out top to bottom:
+
+| Rows | Contents |
+|---|---|
+| 0 – 127 | the sky panel, 320 × 128 |
+| 128 – 143 | solid magenta gutter, 16 px |
+| 144 – 207 | the hills panel, 320 × 64 |
+| 208 – 223 | solid magenta gutter, 16 px |
+| 224 – 319 | the ground panel, 320 × 96 |
+
+#### One image per layer
+
+Three requests. Use this when a panel came back wrong and only that one needs
+redoing, or when the model will not hold a layout. Paste the same context
+paragraph into each of the three, then the block for that layer.
+
+Either way, **expect to fix the layout by hand.** Image models are good at the
+drawing and bad at exact pixel dimensions; assume you will crop and resample
+to the exact sizes, and assume the seam needs repairing. `tools/make_stage.py`
+draws the current stage in code precisely because that guarantees a seamless
+join: its ridges are sine waves with a whole number of cycles across the
+width, so they cannot help but meet.
+
+---
+
+### A worked example: a Kyoto street in the ninja era
+
+#### The context paragraph — goes at the top of every request
+
+> A night scene on a narrow street in Kyoto in the late feudal period, the era
+> of ninja and wandering swordsmen. Wooden machiya townhouses with deep tiled
+> eaves crowd the street, paper lanterns glowing dull orange outside their
+> doors, a temple gate further off. The mood is quiet, cold and blue, lit by a
+> low moon — not a festival, not a battle. This is background art for a 16-bit
+> arcade beat-'em-up: flat pixel art, hard edges, no gradients, no
+> anti-aliasing, and a single deliberately limited palette of about 15 colours
+> shared across the whole scene, mostly deep blues and browns with a few warm
+> lantern accents.
+
+#### As one image, three panels
+
+> [context paragraph]
+>
+> Produce a single image, exactly 320 pixels wide and 320 pixels tall,
+> containing three separate horizontal panels of the same scene, divided by
+> solid magenta (#FF00FF) gutters exactly 16 pixels tall. No borders, no
+> labels, no text anywhere.
+>
+> **Rows 0 to 127 — the sky panel, 320 × 128.** The night sky over the city:
+> a low crescent moon, scattered stars, thin cloud. Fully opaque, no magenta.
+> It never moves, so it needs no seam.
+>
+> **Rows 144 to 207 — the rooftops panel, 320 × 64.** The middle distance:
+> tiled roofs of machiya houses, a temple gate, a pagoda silhouette, drying
+> poles and a few lanterns, all seen at a distance and darker than the
+> foreground. Everything **above** the rooflines must be solid magenta
+> (#FF00FF) so the sky shows through. The bottom edge of this panel must be
+> fully opaque across its whole width, with no magenta reaching it. The left
+> and right edges must match exactly so it repeats seamlessly.
+>
+> **Rows 224 to 319 — the street panel, 320 × 96.** The street surface itself,
+> seen at a shallow angle from slightly above, receding away from the viewer —
+> a flat floor, not a wall. Packed earth and worn stone paving, a gutter, the
+> stone bases of the buildings along the very top. Plain and mid-toned in the
+> middle: characters are drawn on top of it and must stay readable. Detail
+> should get coarser and larger towards the bottom of the panel to suggest
+> nearness. Fully opaque, no magenta. The left and right edges must match
+> exactly so it repeats seamlessly.
+
+#### As three separate requests
+
+> [context paragraph]
+>
+> A pixel art **night sky over Kyoto**, exactly 320 pixels wide and 128 pixels
+> tall. A low crescent moon, scattered stars, thin cloud. Fully opaque — every
+> pixel is sky. No horizon line, no buildings, no ground: this is only the sky
+> above the rooftops. No characters, no text.
+
+> [context paragraph]
+>
+> A seamless horizontally tiling pixel art band of **Kyoto rooftops seen at a
+> distance**, exactly 320 pixels wide and 64 pixels tall. Tiled machiya roofs,
+> a temple gate, a pagoda silhouette, a few dim paper lanterns. Darker and
+> less detailed than the foreground, since this is the middle distance.
+>
+> Everything above the rooflines must be solid magenta (#FF00FF) so it can be
+> made transparent. The bottom edge must be completely opaque across the full
+> width — no magenta may touch it, or a gap opens between this and the street.
+> The left and right edges must match exactly so the band repeats without a
+> visible seam. No characters, no text.
+
+> [context paragraph]
+>
+> A seamless horizontally tiling pixel art **street surface**, exactly 320
+> pixels wide and 96 pixels tall, seen at a shallow angle from slightly above
+> and receding away from the viewer. This is a floor, not a wall.
+>
+> Read it as three bands down its height. The top 16 pixels are the far edge
+> of the street where it meets the buildings: the stone bases of the houses, a
+> drain, a step. The middle 56 pixels are the part characters walk on — packed
+> earth and worn stone paving, plain and mid-toned, no large or bright
+> features, because characters and their shadows are drawn on top and must
+> stay readable. The bottom 24 pixels are the nearest part of the street,
+> which may be darker and more detailed.
+>
+> Suggest depth by making the paving texture coarser and larger towards the
+> bottom, not by drawing converging lines or a vanishing point. Fully opaque
+> everywhere. The left and right edges must match exactly so it repeats
+> without a visible seam. No characters, no text.
+
+#### Wiring the result in
+
+The build currently **draws** the stage rather than converting it, so there is
+no tool yet that takes three finished layer images and produces the tile sheets
+and `stage.h`. That converter is the missing piece between generated art and
+the cartridge; it would be the stage's equivalent of `tools/sheet2neo.py`, and
+its main job is the hard part described above — quantising all three layers
+together against one shared 15-colour palette.
 
 ---
 
@@ -203,12 +386,13 @@ For a character sheet, point the makefile at it and name its animations:
 
 ```make
 SHEET=assets/images/sprites/your-sheet.png
-    --anim walk:0 --anim attack:1 --anim jump:2:1-4 --anim crouch:2:0-1
+    --anim walk:0 --anim attack:1 --anim jump:2 --anim hurt:3
 ```
 
 `--anim NAME:ROW` takes a whole row; `--anim NAME:ROW:FIRST-LAST` takes part
-of one, which is how the jump was split out of a row that begins with a
-crouch. The character's size is `--height` in the `prep_sheet` step.
+of one, which is how the current character's hurt animation borrows two frames
+out of the middle of its attack. The character's size is `--height`, on either
+`gifs2sheet` or `prep_sheet` depending on which path the sheet comes through.
 
 Both tools write a C header next to their output with the palette, the frame
 size and where each animation starts, and the game reads those rather than
