@@ -21,6 +21,8 @@
 #define PAL_HERO 1
 #define PAL_STAGE 2
 #define PAL_UI 3        /* same text colours, but 3 is the frame colour */
+#define PAL_SHADOW 4    /* one dark colour, stippled into a shadow */
+#define PAL_HIT 5       /* every colour white: the flash when a blow lands */
 
 #define FIX_COLS 40
 #define FIX_ROWS 32

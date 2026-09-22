@@ -14,6 +14,7 @@
 #include <ngdevkit/neogeo.h>
 #include <ngdevkit/ng-fix.h>
 #include "hero.h"
+#include "shadow.h"
 #include "stage.h"
 #include "assets/sfx.h"
 #include "dialogue.h"
@@ -28,6 +29,7 @@
 #define SKY_TILE (HERO_TILE + HERO_TILE_COUNT)
 #define HILLS_TILE (SKY_TILE + STAGE_SKY_TILE_COUNT)
 #define GROUND_TILE (HILLS_TILE + STAGE_HILLS_TILE_COUNT)
+#define SHADOW_TILE (GROUND_TILE + STAGE_GROUND_TILE_COUNT)
 
 /*
  * Sprite numbering decides drawing order: higher numbers draw in front, and
@@ -46,16 +48,11 @@
  * column after the first inherits the leader's position and sits 16 px to its
  * right. So a character cannot be given sprites scattered through the list.
  *
- * Three sprites are reserved in front of each body for the shadow that
- * arrives with the depth sorting. They sit at zero height until then. The
- * reservation costs nothing - 315 of the hardware's 381 sprites are unused -
- * and it saves renumbering every block afterwards.
- *
- * The shadow comes before the body so that it draws behind it, drawing order
- * being sprite order.
+ * The shadow comes before the body in each block so that it draws behind it,
+ * drawing order being sprite order.
  */
 #define MAX_ENTITIES 8
-#define SHADOW_SPRITES 3
+#define SHADOW_SPRITES SHADOW_TILES_W
 #define BODY_SPRITES HERO_TILES_W
 #define ENT_SPRITES (SHADOW_SPRITES + BODY_SPRITES)
 
@@ -108,6 +105,49 @@
 /* Game frames each animation frame is held for. */
 #define WALK_RATE 4
 #define ATTACK_RATE 3
+#define HURT_RATE 6
+
+/*
+ * How near in depth the two have to be for a blow to land.
+ *
+ * This is the number the game lives or dies by. Too small and attacks whiff
+ * at what looks like point blank range, because a floor 56 scanlines deep is
+ * far finer than anyone aims; too large and the depth stops mattering, since
+ * everything in the lane connects and the second axis may as well not exist.
+ *
+ * It is per attack rather than global: a sweep should forgive more than a
+ * jab. Ten is a starting point, not a measured one - tune it by playing.
+ */
+#define ATK_PUNCH_Z_TOL 10
+
+/*
+ * An attack's hitbox, in the attacker's terms.
+ *
+ * The box is placed ahead of the attacker in whichever direction it faces,
+ * and a blow only lands if all three of depth, horizontal reach and height
+ * agree. Height is what stops a punch thrown along the ground from hitting
+ * someone at the top of a jump.
+ */
+struct attack {
+    u8 first, last;     /* animation frames the box is live for */
+    s16 reach;          /* 8.8 px from the attacker's centre to the box's */
+    s16 half_w;         /* 8.8 px, half the box's width along x */
+    s16 z_tol;          /* 8.8 px, half the box's depth - see above */
+    s16 air_hi;         /* 8.8 px, the highest feet this blow still reaches */
+};
+
+/* Frames 3 to 5 of 8: the arm is out from frame 3 and has been withdrawn by
+   frame 6, so the box is live for 9 game frames of a 24 frame swing. */
+static const struct attack punch = {
+    3, 5,
+    FX(34), FX(20),
+    FX(ATK_PUNCH_Z_TOL),
+    FX(40),
+};
+
+/* How hard a blow pushes its target back, in 8.8 px on the frame it lands;
+   it decays from there. */
+#define KNOCKBACK FX(3)
 
 /// The art faces right, so walking left is the mirrored one. Depth adds no
 /// facings: nothing ever faces towards the screen or away from it.
@@ -119,6 +159,7 @@ enum state {
     ST_WALK,
     ST_JUMP,
     ST_ATTACK,
+    ST_HURT,
 };
 
 struct entity {
@@ -126,11 +167,14 @@ struct entity {
     s16 z;          /* depth on the floor, 8.8, clamped to the band */
     s16 air;        /* height above the floor, 8.8; zero is standing */
     s16 vair;       /* vertical speed, 8.8 */
+    s16 push;       /* knockback along x, 8.8, decaying */
     u8 active;
     u8 facing;
     u8 state;
     u8 frame;
     u8 tick;
+    u8 palette;     /* PAL_HERO, or PAL_HIT for the frames after a blow lands */
+    u8 struck;      /* this attack has already connected; only hit once */
 };
 
 static struct entity ents[MAX_ENTITIES];
@@ -154,6 +198,14 @@ static const u16 ui_palette[16] = {
     0x8000, 0x0fff, 0x0666, 0x0eb4, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
 };      /*                  ^ colour 3: warm gold */
+
+/* Every colour white, so a character drawn in it is a white silhouette. The
+   arcade way of showing a blow landing, and it costs no art: the same frames
+   are drawn in a different palette for a few frames. */
+static const u16 hit_palette[16] = {
+    0x8000, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff,
+    0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff, 0x7fff,
+};
 
 
 /*
@@ -196,6 +248,10 @@ static void set_brightness(u16 level) {
             dim_color(stage_palette[i], level, FADE_STEPS);
         MMAP_PALBANK1[PAL_UI * 16 + i] =
             dim_color(ui_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_SHADOW * 16 + i] =
+            dim_color(shadow_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_HIT * 16 + i] =
+            dim_color(hit_palette[i], level, FADE_STEPS);
     }
 }
 
@@ -343,8 +399,8 @@ static void scroll_layer(u16 first, u16 tile_base, u16 rows,
  * Mirroring is not only a per-tile flag: the columns have to be emitted in
  * reverse order too, or the character is assembled back to front.
  */
-static void set_body_frame(u16 base, u16 anim_row, u8 f, u8 dir) {
-    u16 attr = (1 << 8) | (dir == FACING_LEFT ? 1 : 0);   /* palette 1, H-flip */
+static void set_body_frame(u16 base, u16 anim_row, u8 f, u8 dir, u8 pal) {
+    u16 attr = (u16)(pal << 8) | (dir == FACING_LEFT ? 1 : 0);   /* H-flip */
 
     for (u16 col = 0; col < BODY_SPRITES; col++) {
         u16 src = (dir == FACING_LEFT) ? (BODY_SPRITES - 1 - col) : col;
@@ -380,13 +436,37 @@ static void hide_body(u16 base) {
 
 
 /*
- * Lay out every character's sprite block once: shrink off, and the chain
- * stitched together. Only the tiles and the leader's position change per
- * frame after this.
+ * The shadow never changes its tiles, so they are written once and only its
+ * position is touched afterwards. It is drawn at the character's depth and
+ * ignores `air` entirely - that is the whole point of it.
+ */
+static void place_shadow(u16 base, s16 x, s16 z) {
+    *REG_VRAMMOD = ADDR_SCB4 - ADDR_SCB3;
+    *REG_VRAMADDR = ADDR_SCB3 + base;
+    /* Centred on the feet: the cell is SHADOW_H tall, so its middle row sits
+       on the floor line the character is standing on. */
+    *REG_VRAMRW = (((496 - (FLOOR_TOP + z - SHADOW_PX_H / 2)) & 0x1ff) << 7)
+                  | SHADOW_TILES_H;
+    *REG_VRAMRW = (x & 0x1ff) << 7;
+}
+
+
+static void hide_shadow(u16 base) {
+    *REG_VRAMMOD = 0;
+    *REG_VRAMADDR = ADDR_SCB3 + base;
+    *REG_VRAMRW = 0;
+}
+
+
+/*
+ * Lay out every character's sprite block once: tiles for the shadow, shrink
+ * off, and both chains stitched together. Only the body's tiles and the two
+ * leaders' positions change per frame after this.
  */
 static void init_entities(void) {
     for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
         u16 base = ENT_BODY(slot);
+        u16 shadow = ENT_SHADOW(slot);
 
         for (u16 col = 0; col < BODY_SPRITES; col++) {
             *REG_VRAMMOD = 0;
@@ -400,12 +480,24 @@ static void init_entities(void) {
         }
         hide_body(base);
 
-        /* The shadow block is reserved but has no art yet. */
-        *REG_VRAMMOD = 0;
         for (u16 col = 0; col < SHADOW_SPRITES; col++) {
-            *REG_VRAMADDR = ADDR_SCB3 + ENT_SHADOW(slot) + col;
-            *REG_VRAMRW = 0;
+            *REG_VRAMMOD = 1;
+            *REG_VRAMADDR = ADDR_SCB1 + (shadow + col) * 64;
+            for (u16 row = 0; row < SHADOW_TILES_H; row++) {
+                *REG_VRAMRW = SHADOW_TILE + row * SHADOW_TILES_W + col;
+                *REG_VRAMRW = PAL_SHADOW << 8;
+            }
+
+            *REG_VRAMMOD = 0;
+            *REG_VRAMADDR = ADDR_SCB2 + shadow + col;
+            *REG_VRAMRW = 0xfff;
+
+            if (col > 0) {
+                *REG_VRAMADDR = ADDR_SCB3 + shadow + col;
+                *REG_VRAMRW = 1 << 6;
+            }
         }
+        hide_shadow(shadow);
     }
 }
 
@@ -502,12 +594,118 @@ static u8 walk(struct entity *e, u8 pad) {
 }
 
 
+/*
+ * Does `a`'s attack reach `t`?
+ *
+ * Three tests, and all three have to agree. Depth is the one that decides how
+ * the game feels; horizontal reach is the obvious one; height is what stops a
+ * blow thrown along the floor from connecting with someone in mid-air above
+ * it.
+ */
+static u8 attack_reaches(const struct entity *a, const struct attack *atk,
+                         const struct entity *t) {
+    s16 dz = (s16)(t->z - a->z);
+    if (dz < -atk->z_tol || dz > atk->z_tol) {
+        return 0;
+    }
+
+    if (t->air > atk->air_hi) {
+        return 0;
+    }
+
+    /* The box sits ahead of the attacker, on the side it faces. Both
+       positions are the sprite's left edge, so compare centres. */
+    s32 centre = a->x + FX(CHAR_W / 2);
+    s32 box = (a->facing == FACING_RIGHT) ? centre + atk->reach
+                                          : centre - atk->reach;
+    s32 dx = (t->x + FX(CHAR_W / 2)) - box;
+    if (dx < -atk->half_w || dx > atk->half_w) {
+        return 0;
+    }
+    return 1;
+}
+
+
+/// Take a blow: stunned, flashed white, and pushed away from whoever threw it.
+static void take_hit(struct entity *t, const struct entity *from) {
+    set_state(t, ST_HURT);
+    t->frame = 0;
+    t->tick = 0;
+    t->palette = PAL_HIT;
+    t->push = (from->facing == FACING_RIGHT) ? KNOCKBACK : -KNOCKBACK;
+
+    /* A jump is cut short rather than continued, so a blow visibly
+       interrupts whatever the target was doing. */
+    t->air = 0;
+    t->vair = 0;
+}
+
+
+/*
+ * Resolve `a`'s swing against everyone else, once per swing.
+ *
+ * `struck` is what makes it once: without it the box is live for nine frames
+ * and would land nine times, which reads as one blow doing nine times the
+ * damage and looks like the target is being held in the flash.
+ */
+static void resolve_attack(struct entity *a, const struct attack *atk) {
+    if (a->struck || a->frame < atk->first || a->frame > atk->last) {
+        return;
+    }
+
+    for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+        struct entity *t = &ents[slot];
+        if (t == a || !t->active || t->state == ST_HURT) {
+            continue;
+        }
+        if (attack_reaches(a, atk, t)) {
+            take_hit(t, a);
+            a->struck = 1;
+            play_sound(SND_PUNCH);
+            return;             /* one target per swing */
+        }
+    }
+}
+
+
+/*
+ * Everything a character does that is not driven by the pad: the stun after a
+ * blow, and the knockback decaying away under it.
+ */
+static void update_hurt(struct entity *e) {
+    if (e->state != ST_HURT) {
+        return;
+    }
+
+    e->x += e->push;
+    e->push = (s16)(e->push * 3 / 4);        /* slides to a stop */
+
+    /* White for the first frame of the reaction only. Held any longer it
+       stops reading as an impact and starts looking like a state. */
+    e->palette = (e->frame == 0) ? PAL_HIT : PAL_HERO;
+
+    if (advance_once(e, HERO_HURT_FRAMES, HURT_RATE)) {
+        set_state(e, ST_IDLE);
+        e->palette = PAL_HERO;
+        e->push = 0;
+    }
+    clamp_to_floor(e);
+}
+
+
 static void update_player(struct entity *e) {
     u8 pad = in_pad;
     u8 pressed = in_pressed;
 
+    /* Being hit takes the controls away until the stun runs out. */
+    if (e->state == ST_HURT) {
+        update_hurt(e);
+        return;
+    }
+
     /* Attacking and jumping run to completion; they are not interrupted. */
     if (e->state == ST_ATTACK) {
+        resolve_attack(e, &punch);
         if (advance_once(e, HERO_ATTACK_FRAMES, ATTACK_RATE)) {
             set_state(e, ST_IDLE);
         }
@@ -530,7 +728,7 @@ static void update_player(struct entity *e) {
         }
     } else if (pressed & CNT_A) {
         set_state(e, ST_ATTACK);
-        play_sound(SND_PUNCH);
+        e->struck = 0;          /* this swing has not connected yet */
     } else if (pressed & CNT_B) {
         /* Jump is a button now. Up and down steer through the floor's depth,
            so the stick has no spare direction to put it on. */
@@ -580,6 +778,7 @@ static u16 anim_row(const struct entity *e) {
     switch (e->state) {
     case ST_ATTACK: return HERO_ATTACK_ROW;
     case ST_JUMP:   return HERO_JUMP_ROW;
+    case ST_HURT:   return HERO_HURT_ROW;
     default:        return HERO_WALK_ROW;   /* idle rests on walk[0] */
     }
 }
@@ -649,13 +848,21 @@ static void draw_entities(void) {
         /* Empty slots sort last, so the first one ends the characters. */
         if (!e->active) {
             hide_body(ENT_BODY(rank));
+            hide_shadow(ENT_SHADOW(rank));
             continue;
         }
 
-        set_body_frame(ENT_BODY(rank), anim_row(e), e->frame, e->facing);
-        place_body(ENT_BODY(rank),
-                   (s16)(FX_PX(e->x) - camera_x),
+        s16 screen_x = (s16)(FX_PX(e->x) - camera_x);
+
+        set_body_frame(ENT_BODY(rank), anim_row(e), e->frame, e->facing,
+                       e->palette);
+        place_body(ENT_BODY(rank), screen_x,
                    floor_screen_top(e->z, e->air, CHAR_H));
+
+        /* On the floor whatever the body is doing, and centred under it. */
+        place_shadow(ENT_SHADOW(rank),
+                     (s16)(screen_x + (CHAR_W - SHADOW_PX_W) / 2),
+                     FX_PX(e->z));
     }
 }
 
@@ -663,6 +870,7 @@ static void draw_entities(void) {
 static void hide_entities(void) {
     for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
         hide_body(ENT_BODY(slot));
+        hide_shadow(ENT_SHADOW(slot));
     }
 }
 
@@ -680,6 +888,9 @@ static struct entity *spawn(s32 x, s16 z, u8 facing) {
             e->state = ST_IDLE;
             e->frame = 0;
             e->tick = 0;
+            e->push = 0;
+            e->palette = PAL_HERO;
+            e->struck = 0;
             return e;
         }
     }
@@ -891,6 +1102,15 @@ int main(void) {
             wait_vblank();
             input_poll();
             update_player(player);
+
+            /* The dummy has no behaviour of its own; all it does is recover
+               from being hit. Enemies with their own will go here. */
+            for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
+                if (ents[slot].active && &ents[slot] != player) {
+                    update_hurt(&ents[slot]);
+                }
+            }
+
             update_camera(player);
             draw_entities();
 

@@ -5,7 +5,7 @@
 #define HERO_TILES_W 4
 #define HERO_TILES_H 6
 #define HERO_SHEET_W 32
-#define HERO_TILE_COUNT 576
+#define HERO_TILE_COUNT 768
 
 #define HERO_WALK_FRAMES 8
 #define HERO_WALK_ROW 0
@@ -13,6 +13,8 @@
 #define HERO_ATTACK_ROW 6
 #define HERO_JUMP_FRAMES 4
 #define HERO_JUMP_ROW 12
+#define HERO_HURT_FRAMES 2
+#define HERO_HURT_ROW 18
 
 /* 16 colours, index 0 transparent. */
 static const u16 hero_palette[16] = {
