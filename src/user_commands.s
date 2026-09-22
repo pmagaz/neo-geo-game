@@ -96,11 +96,15 @@ adpcm_a_jump:
         .db     0xdf
         .db     2
 
+;;; The swing, which plays the jump's sample: the same short whoosh suits
+;;; both. It points at that sample rather than the command simply being
+;;; SND_JUMP, so that it keeps a channel of its own - punching in mid-air
+;;; would otherwise restart the jump's channel and cut it short.
 adpcm_a_punch:
-        .db     PUNCH_START_LSB
-        .db     PUNCH_START_MSB
-        .db     PUNCH_STOP_LSB
-        .db     PUNCH_STOP_MSB
+        .db     JUMP_START_LSB
+        .db     JUMP_START_MSB
+        .db     JUMP_STOP_LSB
+        .db     JUMP_STOP_MSB
         .db     2                       ; channel 3
         .db     0xdf
         .db     4

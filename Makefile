@@ -208,7 +208,9 @@ $(BUILDDIR)/src/user_commands.rel: $(BUILDDIR)/assets/samples.inc
 #
 # ADPCM-A is four bits a sample, so a second of this costs about 9 KB of the
 # 512 KB sample ROM; the music tracks are the expensive ones.
-SFX=gong jump punch taiko koto hit step
+# No punch: the swing plays the jump's sample, on a channel of its own. See
+# src/user_commands.s.
+SFX=gong jump taiko koto hit step
 SFXWAV=$(SFX:%=$(BUILDDIR)/assets/sfx/%.wav)
 
 # Trim the dead air at each end - generously at the tail, so a sound's decay
@@ -218,15 +220,14 @@ SFXTRIM=silence 1 0.01 0.1% reverse silence 1 0.15 0.03% reverse
 $(BUILDDIR)/assets/sfx/%.wav: assets/sound/%.mp3
 	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@ $(SFXTRIM)
 
-# Three sounds are cut out of longer recordings rather than used whole. The
+# Two sounds are cut out of longer recordings rather than used whole. The
 # offsets were measured off each file's envelope, not guessed, and they are
 # here rather than in a pre-trimmed asset so that re-cutting one is editing a
 # number instead of replacing a binary.
-
-# The swing. punch-sequence.wav is three punches, at 0.10, 1.32 and 2.48 s;
-# this is the first, which runs until about 0.42.
-$(BUILDDIR)/assets/sfx/punch.wav: assets/sound/punch-sequence.wav
-	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@ trim 0.09 0.34 $(SFXTRIM)
+#
+# assets/sound/punch-sequence.wav is no longer one of them - the swing plays
+# the jump's sample now - but it is left in the tree with the other unused
+# recordings, since cutting a swing back out of it is two lines.
 
 # The impact, which is already a single hit and is used whole.
 $(BUILDDIR)/assets/sfx/hit.wav: assets/sound/punch-hit.wav

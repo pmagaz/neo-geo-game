@@ -6,8 +6,12 @@
 #
 # The WAVs are built from the sources in assets/sound/ by the makefile: mono
 # at 18.5 kHz, because that is the fixed rate of the YM2610's ADPCM-A
-# channels. Three of them are cut out of longer recordings - see the makefile
+# channels. Two of them are cut out of longer recordings - see the makefile
 # for which part of which file each one takes.
+#
+# There is no entry for the punch: it plays the jump's sample rather than one
+# of its own, so src/user_commands.s points its descriptor at this list's
+# `jump` while giving it a separate channel.
 
 - adpcm_a:
     name: gong
@@ -15,9 +19,6 @@
 - adpcm_a:
     name: jump
     uri: file://build/assets/sfx/jump.wav
-- adpcm_a:
-    name: punch
-    uri: file://build/assets/sfx/punch.wav
 - adpcm_a:
     name: taiko
     uri: file://build/assets/sfx/taiko.wav
