@@ -15,6 +15,7 @@
 #include <ngdevkit/ng-fix.h>
 #include "hero.h"
 #include "shadow.h"
+#include "spark.h"
 #include "stage.h"
 #include "assets/sfx.h"
 #include "dialogue.h"
@@ -30,6 +31,7 @@
 #define HILLS_TILE (SKY_TILE + STAGE_SKY_TILE_COUNT)
 #define GROUND_TILE (HILLS_TILE + STAGE_HILLS_TILE_COUNT)
 #define SHADOW_TILE (GROUND_TILE + STAGE_GROUND_TILE_COUNT)
+#define SPARK_TILE (SHADOW_TILE + SHADOW_TILE_COUNT)
 
 /*
  * Sprite numbering decides drawing order: higher numbers draw in front, and
@@ -58,6 +60,18 @@
 
 #define ENT_SHADOW(slot) (FIRST_SPRITE + (slot) * ENT_SPRITES)
 #define ENT_BODY(slot) (ENT_SHADOW(slot) + SHADOW_SPRITES)
+
+/*
+ * The sparks come after every character, so they draw over all of them.
+ *
+ * They are deliberately not sorted into the depth order. A spark belongs to
+ * two characters at once and sits between them, so there is no depth at which
+ * it is correct; and an impact effect that disappears behind a shoulder has
+ * stopped doing the one thing it is for. Drawing them on top is also what the
+ * arcade games this is copying do.
+ */
+#define MAX_SPARKS 4
+#define SPARK_SPRITE(i) (FIRST_SPRITE + MAX_ENTITIES * ENT_SPRITES + (i))
 
 #define SCREEN_W 320
 #define SCREEN_H 224
@@ -155,6 +169,14 @@ static const struct attack punch = {
    it decays from there. */
 #define KNOCKBACK FX(3)
 
+/* The spark: three frames, three game frames each, so it is gone in nine.
+   Long enough to register and too short to sit there. SPARK_CHEST is how far
+   above the feet a blow is taken to land - about two thirds up a 96 px
+   character, which is where the punch animation puts the fist. */
+#define SPARK_RATE 3
+#define SPARK_LIFE (SPARK_FRAMES * SPARK_RATE)
+#define SPARK_CHEST 58
+
 /// The art faces right, so walking left is the mirrored one. Depth adds no
 /// facings: nothing ever faces towards the screen or away from it.
 #define FACING_RIGHT 0
@@ -183,7 +205,20 @@ struct entity {
     u8 struck;      /* this attack has already connected; only hit once */
 };
 
+/*
+ * A spark lives for SPARK_LIFE frames and then stops being drawn; `timer` at
+ * or past that is what "unused" means, so there is no separate active flag to
+ * keep in step.
+ */
+struct spark {
+    s32 x;          /* world, 8.8: it scrolls with everything else */
+    s16 y;          /* screen, whole px, the top of the cell */
+    u8 timer;
+    u8 flip;        /* mirrored, so repeated blows are not one stamp */
+};
+
 static struct entity ents[MAX_ENTITIES];
+static struct spark sparks[MAX_SPARKS];
 static struct entity *player = &ents[0];
 static s16 camera_x = 0;
 /* The tile column each scrolling layer is currently showing, so its tile maps
@@ -258,6 +293,8 @@ static void set_brightness(u16 level) {
             dim_color(shadow_palette[i], level, FADE_STEPS);
         MMAP_PALBANK1[PAL_HIT * 16 + i] =
             dim_color(hit_palette[i], level, FADE_STEPS);
+        MMAP_PALBANK1[PAL_SPARK * 16 + i] =
+            dim_color(spark_palette[i], level, FADE_STEPS);
     }
 }
 
@@ -433,8 +470,8 @@ static void place_body(u16 base, s16 x, s16 y) {
 
 
 /// A sprite with a height of zero is not drawn, and a sticky follower
-/// inherits the leader's height, so zeroing the leader hides the block.
-static void hide_body(u16 base) {
+/// inherits the leader's height, so zeroing the leader hides a whole chain.
+static void hide_sprite(u16 base) {
     *REG_VRAMMOD = 0;
     *REG_VRAMADDR = ADDR_SCB3 + base;
     *REG_VRAMRW = 0;
@@ -454,13 +491,6 @@ static void place_shadow(u16 base, s16 x, s16 z) {
     *REG_VRAMRW = (((496 - (FLOOR_TOP + z - SHADOW_PX_H / 2)) & 0x1ff) << 7)
                   | SHADOW_TILES_H;
     *REG_VRAMRW = (x & 0x1ff) << 7;
-}
-
-
-static void hide_shadow(u16 base) {
-    *REG_VRAMMOD = 0;
-    *REG_VRAMADDR = ADDR_SCB3 + base;
-    *REG_VRAMRW = 0;
 }
 
 
@@ -484,7 +514,7 @@ static void init_entities(void) {
                 *REG_VRAMRW = 1 << 6;       /* sticky: follow the previous one */
             }
         }
-        hide_body(base);
+        hide_sprite(base);
 
         for (u16 col = 0; col < SHADOW_SPRITES; col++) {
             *REG_VRAMMOD = 1;
@@ -503,7 +533,66 @@ static void init_entities(void) {
                 *REG_VRAMRW = 1 << 6;
             }
         }
-        hide_shadow(shadow);
+        hide_sprite(shadow);
+    }
+
+    /* The sparks are single sprites, so there is no chain to stitch: only the
+       shrink register, which never changes after this. */
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        *REG_VRAMMOD = 0;
+        *REG_VRAMADDR = ADDR_SCB2 + SPARK_SPRITE(i);
+        *REG_VRAMRW = 0xfff;
+        hide_sprite(SPARK_SPRITE(i));
+        sparks[i].timer = SPARK_LIFE;
+    }
+}
+
+
+static void spawn_spark(s32 x, s16 y, u8 flip) {
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        if (sparks[i].timer >= SPARK_LIFE) {
+            sparks[i].x = x;
+            sparks[i].y = y;
+            sparks[i].timer = 0;
+            sparks[i].flip = flip;
+            return;
+        }
+    }
+    /* All of them already alight. Dropping this one is better than cutting
+       one short: four at nine frames each is far more than the fighting can
+       produce, so getting here at all means something else is wrong. */
+}
+
+
+static void update_sparks(void) {
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        if (sparks[i].timer < SPARK_LIFE) {
+            sparks[i].timer++;
+        }
+    }
+}
+
+
+static void draw_sparks(void) {
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        u16 sprite = SPARK_SPRITE(i);
+
+        if (sparks[i].timer >= SPARK_LIFE) {
+            hide_sprite(sprite);
+            continue;
+        }
+
+        /* One tile per frame, laid out left to right, so the frame number is
+           the offset from the first tile. */
+        *REG_VRAMMOD = 1;
+        *REG_VRAMADDR = ADDR_SCB1 + sprite * 64;
+        *REG_VRAMRW = SPARK_TILE + sparks[i].timer / SPARK_RATE;
+        *REG_VRAMRW = (PAL_SPARK << 8) | sparks[i].flip;
+
+        *REG_VRAMMOD = ADDR_SCB4 - ADDR_SCB3;
+        *REG_VRAMADDR = ADDR_SCB3 + sprite;
+        *REG_VRAMRW = (((496 - sparks[i].y) & 0x1ff) << 7) | SPARK_TILES_H;
+        *REG_VRAMRW = (((s16)(FX_PX(sparks[i].x) - camera_x)) & 0x1ff) << 7;
     }
 }
 
@@ -608,6 +697,15 @@ static u8 walk(struct entity *e, u8 pad) {
  * blow thrown along the floor from connecting with someone in mid-air above
  * it.
  */
+/// Where the middle of an attack's box sits in the world: ahead of the
+/// attacker, on the side it faces.
+static s32 attack_box_x(const struct entity *a, const struct attack *atk) {
+    s32 centre = a->x + FX(CHAR_W / 2);
+    return (a->facing == FACING_RIGHT) ? centre + atk->reach
+                                       : centre - atk->reach;
+}
+
+
 static u8 attack_reaches(const struct entity *a, const struct attack *atk,
                          const struct entity *t) {
     s16 dz = (s16)(t->z - a->z);
@@ -619,12 +717,8 @@ static u8 attack_reaches(const struct entity *a, const struct attack *atk,
         return 0;
     }
 
-    /* The box sits ahead of the attacker, on the side it faces. Both
-       positions are the sprite's left edge, so compare centres. */
-    s32 centre = a->x + FX(CHAR_W / 2);
-    s32 box = (a->facing == FACING_RIGHT) ? centre + atk->reach
-                                          : centre - atk->reach;
-    s32 dx = (t->x + FX(CHAR_W / 2)) - box;
+    /* Both positions are the sprite's left edge, so compare centres. */
+    s32 dx = (t->x + FX(CHAR_W / 2)) - attack_box_x(a, atk);
     if (dx < -atk->half_w || dx > atk->half_w) {
         return 0;
     }
@@ -668,6 +762,15 @@ static void resolve_attack(struct entity *a, const struct attack *atk) {
             take_hit(t, a);
             a->struck = 1;
             play_sound(SND_HIT);
+
+            /* Flash a spark where the blow landed: the middle of the box
+               that just connected, at the height the fist is thrown. The
+               target's own air is used, so hitting someone off the ground
+               puts the spark on them rather than where they should be. */
+            s16 feet = (s16)(FLOOR_TOP + FX_PX(t->z) - FX_PX(t->air));
+            spawn_spark(attack_box_x(a, atk) - FX(SPARK_PX_W / 2),
+                        (s16)(feet - SPARK_CHEST - SPARK_PX_H / 2),
+                        a->facing == FACING_LEFT);
             return;             /* one target per swing */
         }
     }
@@ -864,8 +967,8 @@ static void draw_entities(void) {
 
         /* Empty slots sort last, so the first one ends the characters. */
         if (!e->active) {
-            hide_body(ENT_BODY(rank));
-            hide_shadow(ENT_SHADOW(rank));
+            hide_sprite(ENT_BODY(rank));
+            hide_sprite(ENT_SHADOW(rank));
             continue;
         }
 
@@ -886,8 +989,11 @@ static void draw_entities(void) {
 
 static void hide_entities(void) {
     for (u16 slot = 0; slot < MAX_ENTITIES; slot++) {
-        hide_body(ENT_BODY(slot));
-        hide_shadow(ENT_SHADOW(slot));
+        hide_sprite(ENT_BODY(slot));
+        hide_sprite(ENT_SHADOW(slot));
+    }
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        hide_sprite(SPARK_SPRITE(i));
     }
 }
 
@@ -920,6 +1026,9 @@ static void reset_entities(void) {
         ents[slot].active = 0;
     }
     init_order();
+    for (u16 i = 0; i < MAX_SPARKS; i++) {
+        sparks[i].timer = SPARK_LIFE;
+    }
     camera_x = 0;
 
     player = spawn(FX(SCREEN_W / 2 - CHAR_W / 2), FX(FLOOR_Z_MID),
@@ -1129,7 +1238,10 @@ int main(void) {
             }
 
             update_camera(player);
+            update_sparks();
+
             draw_entities();
+            draw_sparks();
 
             /* The far hills move at a quarter of the floor's speed, which is
                what makes them read as distant. */

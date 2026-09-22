@@ -23,6 +23,7 @@
 #define PAL_UI 3        /* same text colours, but 3 is the frame colour */
 #define PAL_SHADOW 4    /* one dark colour, stippled into a shadow */
 #define PAL_HIT 5       /* every colour white: the flash when a blow lands */
+#define PAL_SPARK 6     /* the starburst drawn where it landed */
 
 #define FIX_COLS 40
 #define FIX_ROWS 32

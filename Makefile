@@ -109,6 +109,8 @@ $(CROM1): $(BUILDDIR)/assets/images/stages/stage-ground.c1
 $(CROM2): $(BUILDDIR)/assets/images/stages/stage-ground.c2
 $(CROM1): $(BUILDDIR)/assets/images/sprites/shadow.c1
 $(CROM2): $(BUILDDIR)/assets/images/sprites/shadow.c2
+$(CROM1): $(BUILDDIR)/assets/images/sprites/spark.c1
+$(CROM2): $(BUILDDIR)/assets/images/sprites/spark.c2
 
 # The character. Two sets of art are in the tree; HERO picks between them.
 #
@@ -173,6 +175,14 @@ assets/images/sprites/shadow.gif assets/images/sprites/shadow.h: tools/make_shad
 	    -o assets/images/sprites/shadow.gif \
 	    --header assets/images/sprites/shadow.h --name shadow
 
+# The spark that flashes where a blow lands. Drawn rather than converted for
+# the same reason as the shadow: it is geometry, and describing it means the
+# animation frames cost nothing.
+assets/images/sprites/spark.gif assets/images/sprites/spark.h: tools/make_spark.py tools/neogeo_color.py
+	PYTHONPATH=tools $(PYTHON) tools/make_spark.py \
+	    -o assets/images/sprites/spark.gif \
+	    --header assets/images/sprites/spark.h --name spark
+
 # The stage is drawn rather than converted, since the Neo Geo has no
 # background layer and it has to be built from sprite tiles anyway.
 STAGE_LAYERS=$(addprefix assets/images/stages/,stage-sky.gif stage-hills.gif stage-ground.gif)
@@ -182,7 +192,7 @@ $(STAGE_LAYERS) assets/images/stages/stage.h: tools/make_stage.py tools/neogeo_c
 	    --header assets/images/stages/stage.h --name stage
 
 $(BUILDDIR)/main.o: assets/images/sprites/hero.h assets/images/stages/stage.h
-$(BUILDDIR)/main.o: assets/images/sprites/shadow.h
+$(BUILDDIR)/main.o: assets/images/sprites/shadow.h assets/images/sprites/spark.h
 
 
 # sound driver ROM: the Z80 program ---------------------------------------
