@@ -176,6 +176,9 @@ The busiest scanline in the frame then moves to around 120-127, where the sky
 and hills meet the bodies reaching up out of the band, at **65 of 96**. That
 leaves room for nine entities rather than six.
 
+The impact sparks cost one sprite each and four at once, which takes the floor
+band's worst case to **67 of 96**.
+
 ### The 68000 is not the problem
 
 Six entities cost roughly 360 VRAM word writes a frame — 336 of them the tile
@@ -432,9 +435,15 @@ blow.
 
 Being hit is its own state: stunned, pushed away from the attacker with the
 knockback decaying under it, and drawn for six frames in a palette where every
-colour is white. The hurt animation borrows two frames of the attack, since
-there is no hit-reaction art; that is the one animation standing in for
-something.
+colour is white. A spark flashes at the contact point for nine frames on top
+of that. The hurt animation borrows two frames of the attack, since there is
+no hit-reaction art; that is the one animation standing in for something.
+
+The sparks are the one thing on the floor that is **not** depth sorted. A
+spark belongs to the two characters at once and sits between them, so there is
+no depth at which it is correct, and an impact effect that vanishes behind a
+shoulder has stopped doing its job. They take sprite numbers above every
+character and always draw on top.
 
 The specification lists "x/z hitbox overlap" and "z alignment within a
 tolerance" as two conditions, but on the depth axis they are the same test.
