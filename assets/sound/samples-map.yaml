@@ -4,8 +4,10 @@
 # assets/samples.inc with each one's start and stop offset, which the Z80
 # sound driver in src/user_commands.s refers to by name.
 #
-# The WAVs are built from assets/sound/*.mp3 by the makefile: mono at
-# 18.5 kHz, because that is the fixed rate of the YM2610's ADPCM-A channels.
+# The WAVs are built from the sources in assets/sound/ by the makefile: mono
+# at 18.5 kHz, because that is the fixed rate of the YM2610's ADPCM-A
+# channels. Three of them are cut out of longer recordings - see the makefile
+# for which part of which file each one takes.
 
 - adpcm_a:
     name: gong
@@ -22,3 +24,9 @@
 - adpcm_a:
     name: koto
     uri: file://build/assets/sfx/koto.wav
+- adpcm_a:
+    name: hit
+    uri: file://build/assets/sfx/hit.wav
+- adpcm_a:
+    name: step
+    uri: file://build/assets/sfx/step.wav

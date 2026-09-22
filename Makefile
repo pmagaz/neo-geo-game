@@ -208,12 +208,43 @@ $(BUILDDIR)/src/user_commands.rel: $(BUILDDIR)/assets/samples.inc
 #
 # ADPCM-A is four bits a sample, so a second of this costs about 9 KB of the
 # 512 KB sample ROM; the music tracks are the expensive ones.
-SFX=gong jump punch taiko koto
+SFX=gong jump punch taiko koto hit step
 SFXWAV=$(SFX:%=$(BUILDDIR)/assets/sfx/%.wav)
 
+# Trim the dead air at each end - generously at the tail, so a sound's decay
+# is not clipped off.
+SFXTRIM=silence 1 0.01 0.1% reverse silence 1 0.15 0.03% reverse
+
 $(BUILDDIR)/assets/sfx/%.wav: assets/sound/%.mp3
-	"$(SOX)" -V1 $< -c 1 -r 18500 $@ \
-	    silence 1 0.01 0.1% reverse silence 1 0.15 0.03% reverse
+	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@ $(SFXTRIM)
+
+# Three sounds are cut out of longer recordings rather than used whole. The
+# offsets were measured off each file's envelope, not guessed, and they are
+# here rather than in a pre-trimmed asset so that re-cutting one is editing a
+# number instead of replacing a binary.
+
+# The swing. punch-sequence.wav is three punches, at 0.10, 1.32 and 2.48 s;
+# this is the first, which runs until about 0.42.
+$(BUILDDIR)/assets/sfx/punch.wav: assets/sound/punch-sequence.wav
+	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@ trim 0.09 0.34 $(SFXTRIM)
+
+# The impact, which is already a single hit and is used whole.
+$(BUILDDIR)/assets/sfx/hit.wav: assets/sound/punch-hit.wav
+	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@ $(SFXTRIM)
+
+# One footfall on sand, from the passage around the fifth second, where the
+# step lands at 5.65. The window starts just ahead of it: a footstep is
+# triggered on the frame a foot plants, so dead air at the front of the sample
+# is heard as the sound lagging the animation.
+#
+# Two passes, and they cannot be one. That passage peaks at about a tenth of
+# full scale and has to be normalised, but `gain -n` scales against the peak
+# of the whole input file - so applied in the same command as the trim it
+# normalises against all 24 seconds and leaves the cut quiet.
+$(BUILDDIR)/assets/sfx/step.wav: assets/sound/footsteps.wav
+	"$(SOX)" -V1 $< -c 1 -r 18500 -b 16 $@.cut.wav trim 5.63 0.20
+	"$(SOX)" -V1 $@.cut.wav $@ gain -n -3 $(SFXTRIM)
+	rm -f $@.cut.wav
 
 $(VROM1): assets/sound/samples-map.yaml
 

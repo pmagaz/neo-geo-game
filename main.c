@@ -107,6 +107,12 @@
 #define ATTACK_RATE 3
 #define HURT_RATE 6
 
+/* The two frames of the eight-frame cycle where a foot plants, and a footstep
+   is heard. Two per cycle of 32 game frames, so one about every quarter of a
+   second - which is a run rather than a walk, but the art is a run cycle. */
+#define STEP_FRAME_A 2
+#define STEP_FRAME_B 6
+
 /*
  * How near in depth the two have to be for a blow to land.
  *
@@ -661,7 +667,7 @@ static void resolve_attack(struct entity *a, const struct attack *atk) {
         if (attack_reaches(a, atk, t)) {
             take_hit(t, a);
             a->struck = 1;
-            play_sound(SND_PUNCH);
+            play_sound(SND_HIT);
             return;             /* one target per swing */
         }
     }
@@ -729,6 +735,7 @@ static void update_player(struct entity *e) {
     } else if (pressed & CNT_A) {
         set_state(e, ST_ATTACK);
         e->struck = 0;          /* this swing has not connected yet */
+        play_sound(SND_PUNCH);  /* the swing; the impact is its own sound */
     } else if (pressed & CNT_B) {
         /* Jump is a button now. Up and down steer through the floor's depth,
            so the stick has no spare direction to put it on. */
@@ -738,7 +745,17 @@ static void update_player(struct entity *e) {
         play_sound(SND_JUMP);
     } else if (walk(e, pad)) {
         set_state(e, ST_WALK);
+
+        /* A footfall on the two frames of the cycle where a foot plants, and
+           only on the frame the animation actually changes - testing the
+           frame number alone fires it once per game frame for as long as it
+           is displayed. */
+        u8 before = e->frame;
         advance_loop(e, HERO_WALK_FRAMES, WALK_RATE);
+        if (e->frame != before
+            && (e->frame == STEP_FRAME_A || e->frame == STEP_FRAME_B)) {
+            play_sound(SND_STEP);
+        }
     } else {
         set_state(e, ST_IDLE);
         e->frame = 0;

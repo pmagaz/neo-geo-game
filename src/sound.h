@@ -16,9 +16,11 @@
 #define SND_RESET 3
 #define SND_GONG 4
 #define SND_JUMP 5
-#define SND_PUNCH 6
+#define SND_PUNCH 6     /* the swing */
 #define SND_TAIKO 7
 #define SND_KOTO 8
+#define SND_HIT 9       /* the blow landing, which is a different sound */
+#define SND_STEP 10
 
 static inline void play_sound(u8 command) {
     *REG_SOUND = command;

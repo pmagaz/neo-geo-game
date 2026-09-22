@@ -23,6 +23,8 @@ cmd_jmptable::
         jp      play_punch
         jp      play_taiko
         jp      play_koto
+        jp      play_hit
+        jp      play_step
         init_unused_cmd_jmptable
 
 
@@ -48,6 +50,16 @@ play_taiko:
 
 play_koto:
         ld      ix, #adpcm_a_koto
+        call    snd_adpcm_a_play
+        ret
+
+play_hit:
+        ld      ix, #adpcm_a_hit
+        call    snd_adpcm_a_play
+        ret
+
+play_step:
+        ld      ix, #adpcm_a_step
         call    snd_adpcm_a_play
         ret
 
@@ -110,3 +122,25 @@ adpcm_a_koto:
         .db     3                       ; channel 4, the music channel
         .db     0xdb
         .db     8
+
+;;; The blow landing, on its own channel: it fires about nine frames after the
+;;; swing that caused it, and the two must be able to overlap.
+adpcm_a_hit:
+        .db     HIT_START_LSB
+        .db     HIT_START_MSB
+        .db     HIT_STOP_LSB
+        .db     HIT_STOP_MSB
+        .db     4                       ; channel 5
+        .db     0xdf
+        .db     16
+
+;;; A footfall. Retriggered every few frames while walking, and each one
+;;; restarts the channel, which is what stops them piling up.
+adpcm_a_step:
+        .db     STEP_START_LSB
+        .db     STEP_START_MSB
+        .db     STEP_STOP_LSB
+        .db     STEP_STOP_MSB
+        .db     5                       ; channel 6
+        .db     0xd9                    ; under the rest; it plays constantly
+        .db     32
