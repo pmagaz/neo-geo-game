@@ -107,6 +107,8 @@ $(CROM1): $(BUILDDIR)/assets/images/stages/stage-hills.c1
 $(CROM2): $(BUILDDIR)/assets/images/stages/stage-hills.c2
 $(CROM1): $(BUILDDIR)/assets/images/stages/stage-ground.c1
 $(CROM2): $(BUILDDIR)/assets/images/stages/stage-ground.c2
+$(CROM1): $(BUILDDIR)/assets/images/sprites/shadow.c1
+$(CROM2): $(BUILDDIR)/assets/images/sprites/shadow.c2
 
 # The character. Two sets of art are in the tree; HERO picks between them.
 #
@@ -140,7 +142,12 @@ $(PREPPED): $(NEWGIFS) tools/gifs2sheet.py Makefile | $(BUILDDIR)/assets
 	    --anim "attack=assets/new/attack.gif:1-26:8" \
 	    --anim "jump=assets/new/runing.gif:4-12:4"
 
-HERO_ANIMS=--anim walk:0 --anim attack:1 --anim jump:2
+# There is no hit-reaction art, so the hurt animation borrows the two frames
+# of the attack where the character has its head turned away and an arm up.
+# They read as a recoil, which is enough to see a blow land alongside the
+# white flash and the knockback. Replace this range the moment real hurt art
+# exists - it is the one animation here that is standing in for something.
+HERO_ANIMS=--anim walk:0 --anim attack:1 --anim jump:2 --anim hurt:1:1-2
 else
 SHEET=assets/images/sprites/hero-sheet.png
 PREPPED=$(BUILDDIR)/assets/hero-sheet-$(HERO).png
@@ -158,6 +165,14 @@ assets/images/sprites/hero.gif assets/images/sprites/hero.h: $(PREPPED) tools/sh
 	    -o assets/images/sprites/hero.gif \
 	    --header assets/images/sprites/hero.h --name hero $(HERO_ANIMS)
 
+# The shadow under each character. Drawn rather than converted: it is an
+# ellipse, and the stipple that stands in for transparency has to land on
+# exact pixels.
+assets/images/sprites/shadow.gif assets/images/sprites/shadow.h: tools/make_shadow.py tools/neogeo_color.py
+	PYTHONPATH=tools $(PYTHON) tools/make_shadow.py \
+	    -o assets/images/sprites/shadow.gif \
+	    --header assets/images/sprites/shadow.h --name shadow
+
 # The stage is drawn rather than converted, since the Neo Geo has no
 # background layer and it has to be built from sprite tiles anyway.
 STAGE_LAYERS=$(addprefix assets/images/stages/,stage-sky.gif stage-hills.gif stage-ground.gif)
@@ -167,6 +182,7 @@ $(STAGE_LAYERS) assets/images/stages/stage.h: tools/make_stage.py tools/neogeo_c
 	    --header assets/images/stages/stage.h --name stage
 
 $(BUILDDIR)/main.o: assets/images/sprites/hero.h assets/images/stages/stage.h
+$(BUILDDIR)/main.o: assets/images/sprites/shadow.h
 
 
 # sound driver ROM: the Z80 program ---------------------------------------
