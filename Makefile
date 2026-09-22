@@ -183,13 +183,33 @@ assets/images/sprites/spark.gif assets/images/sprites/spark.h: tools/make_spark.
 	    -o assets/images/sprites/spark.gif \
 	    --header assets/images/sprites/spark.h --name spark
 
-# The stage is drawn rather than converted, since the Neo Geo has no
-# background layer and it has to be built from sprite tiles anyway.
+# The stage. Two sources are in the tree; STAGE picks between them.
+#
+#   kyoto  painted art, three panels in one image, cut apart and converted
+#   drawn  generated in code, which is what the engine was built against
+#
+# Both produce the same three layers and the same stage.h, so the game cannot
+# tell which it got. The drawn one is worth keeping: it is guaranteed seamless
+# and always builds, so it is the fallback when painted art is mid-change.
+STAGE?=kyoto
 STAGE_LAYERS=$(addprefix assets/images/stages/,stage-sky.gif stage-hills.gif stage-ground.gif)
-$(STAGE_LAYERS) assets/images/stages/stage.h: tools/make_stage.py tools/neogeo_color.py
+STAGE_HEADER=assets/images/stages/stage.h
+
+ifeq ($(STAGE),drawn)
+$(STAGE_LAYERS) $(STAGE_HEADER): tools/make_stage.py tools/neogeo_color.py
 	PYTHONPATH=tools $(PYTHON) tools/make_stage.py \
 	    --outdir assets/images/stages \
-	    --header assets/images/stages/stage.h --name stage
+	    --header $(STAGE_HEADER) --name stage
+else
+STAGE_ART=assets/images/stages/$(STAGE)-street.jpeg
+
+# stage2neo imports the layer geometry from make_stage rather than keeping a
+# second copy, so a change to where the floor sits reaches both.
+$(STAGE_LAYERS) $(STAGE_HEADER): $(STAGE_ART) tools/stage2neo.py tools/make_stage.py tools/neogeo_color.py
+	PYTHONPATH=tools $(PYTHON) tools/stage2neo.py $(STAGE_ART) \
+	    --outdir assets/images/stages \
+	    --header $(STAGE_HEADER) --name stage
+endif
 
 $(BUILDDIR)/main.o: assets/images/sprites/hero.h assets/images/stages/stage.h
 $(BUILDDIR)/main.o: assets/images/sprites/shadow.h assets/images/sprites/spark.h

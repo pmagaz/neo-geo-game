@@ -344,16 +344,61 @@ width, so they cannot help but meet.
 
 #### Wiring the result in
 
-The build currently **draws** the stage rather than converting it, so there is
-no tool yet that takes three finished layer images and produces the tile sheets
-and `stage.h`. That converter is the missing piece between generated art and
-the cartridge; it would be the stage's equivalent of `tools/sheet2neo.py`, and
-its main job is the hard part described above — quantising all three layers
-together against one shared 15-colour palette.
+`tools/stage2neo.py` takes the panel image and produces the three layer GIFs
+and `stage.h`. Drop the art in `assets/images/stages/` and point the makefile
+at it:
+
+```make
+STAGE?=kyoto       # reads assets/images/stages/kyoto-street.jpeg
+STAGE=drawn        # the stage generated in code, always seamless
+```
+
+It finds the panels by looking for the full-width magenta gutters, so it does
+not care what size the source came back at. Three of its options matter:
+
+| | |
+|---|---|
+| `--weight` | how much a colour's area counts towards winning a palette slot. **Default 0.25, and do not set it to 1.** See the pitfall below. |
+| `--key-grow` | how far to eat into the art around keyed-out magenta, to remove the halo a compressed edge leaves. Default 2. |
+| `--magenta-tolerance` | how far a pixel may stray from `#ff00ff` and still be keyed out. Default 70, which is generous because compression drags the colour a long way. |
+
+It also reports how badly each scrolling layer's left and right edges disagree.
+Treat that as a hint rather than a verdict: it compares exact palette indices,
+so irregular texture like paving reports a high figure and still tiles
+invisibly. Scroll the stage a full 320 pixels and look.
 
 ---
 
 ## 5. Pitfalls, all of which have already happened here
+
+**A side-scrolling background must be an orthographic elevation.** Ask an
+image model for a street and it gives you a street *seen from the middle of
+it*: buildings receding to a vanishing point in the centre of the frame, the
+road narrowing away from you. It looks wonderful and it is useless. The left
+and right edges show different things so it cannot tile, and scrolling it
+swings the whole scene around like a camera pan. Say explicitly that there is
+no perspective, no vanishing point, and that everything is parallel to the
+picture plane — the viewer is standing across the street looking squarely at
+the building fronts. Naming Final Fight or Shadow Dancer helps.
+
+**Quantising by area throws a scene's colour away.** Choosing 15 colours by
+counting pixels lets the biggest flat region decide almost everything. On the
+Kyoto night stage the sky is most of the image, so a straight median cut spent
+four of its fifteen entries splitting one dark blue into four
+indistinguishable dark blues, and dropped every lantern flame and all the
+brown of the woodwork because they were only a few hundred pixels each. The
+result was a scene with no colour in it at all. `stage2neo.py` therefore
+weights each distinct colour by `count ** 0.25` rather than by `count`, which
+keeps the large areas important without letting them crowd out the small
+things a scene is actually remembered for.
+
+**Keyed magenta leaves a halo.** A hard `#ff00ff` edge never survives
+compression or resampling intact; it leaves a fringe of purples that are too
+far from magenta to be keyed and too saturated to belong in the art. In a
+night scene they are the most vivid thing in the image, so the quantiser
+spends real palette entries on them. `--key-grow` eats a pixel or two further
+into the art all round, which removes the fringe at a cost of almost nothing
+once the source is scaled down.
 
 **A checkerboard background is not transparency.** A generated sheet arrived
 as a JPEG with the grey transparency checkerboard painted into it as ordinary

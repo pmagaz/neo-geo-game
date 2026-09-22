@@ -54,6 +54,13 @@ SKY_Y, SKY_H = 0, 128
 HILLS_Y, HILLS_H = 64, 64
 GROUND_Y, GROUND_H = 128, 96
 
+# How deep the floor is, and how much of it sits behind the furthest a
+# character may stand. tools/stage2neo.py imports these rather than keeping
+# its own copy: a converted stage and a drawn one must agree about where the
+# floor is, or the art and the movement part company.
+FLOOR_DEPTH = 72
+FLOOR_BACK = 16
+
 # Index 0 must stay transparent, so the stage draws with indices 1-15.
 PALETTE = [
     (0, 0, 0),          # 0  transparent, never drawn
@@ -250,10 +257,10 @@ def main():
     p.add_argument("--outdir", default="assets", help="where to write the GIFs")
     p.add_argument("--header", required=True, help="C header to write")
     p.add_argument("--name", default="stage", help="identifier prefix")
-    p.add_argument("--floor-depth", type=int, default=72, metavar="ROWS",
+    p.add_argument("--floor-depth", type=int, default=FLOOR_DEPTH, metavar="ROWS",
                    help="scanlines of depth the floor spans, measured down "
                         "from the top of the ground layer")
-    p.add_argument("--floor-back", type=int, default=16, metavar="ROWS",
+    p.add_argument("--floor-back", type=int, default=FLOOR_BACK, metavar="ROWS",
                    help="floor behind the furthest a character may stand, so "
                         "the back row has ground behind its feet")
     p.add_argument("--seed", type=int, default=7, help="scenery random seed")
